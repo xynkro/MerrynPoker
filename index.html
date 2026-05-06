@@ -7966,12 +7966,35 @@
       document.getElementById('pinLockScreen').innerHTML = `<div style="color: red; padding: 20px; text-align: center;">Error: ${err.message}</div>`;
     });
 
-    // ── Service Worker (offline support) ─────────────────────────────────
-    // Only registers over HTTPS or localhost (browser security).
-    // First load fills the cache; subsequent loads work offline.
+    // ── Service Worker (offline support + auto-update) ───────────────────
+    // - HTTPS/localhost only (browser security)
+    // - When a new SW activates, the page reloads once so users always get the latest UI.
     if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW registration failed:', err));
+      window.addEventListener('load', async () => {
+        try {
+          const reg = await navigator.serviceWorker.register('sw.js');
+          // If there's already a waiting SW, ask it to take over.
+          if (reg.waiting) reg.waiting.postMessage('SKIP_WAITING');
+          // When an update is found, push it to active as soon as it's installed.
+          reg.addEventListener('updatefound', () => {
+            const sw = reg.installing;
+            if (!sw) return;
+            sw.addEventListener('statechange', () => {
+              if (sw.state === 'installed' && navigator.serviceWorker.controller) {
+                sw.postMessage('SKIP_WAITING');
+              }
+            });
+          });
+          // When the active SW changes (i.e. a new version took over), reload exactly once.
+          let reloaded = false;
+          navigator.serviceWorker.addEventListener('controllerchange', () => {
+            if (reloaded) return;
+            reloaded = true;
+            window.location.reload();
+          });
+        } catch (err) {
+          console.warn('SW registration failed:', err);
+        }
       });
     }
   </script>
