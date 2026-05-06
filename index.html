@@ -574,6 +574,12 @@
       box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
     }
 
+    /* Alternating row colors so adjacent cards are visually distinct
+       (prevents tapping the wrong row on a long list). */
+    .players-grid > .player-card:nth-child(even) {
+      background: var(--bg-tertiary);
+    }
+
     .player-card:active {
       border-color: var(--accent-primary);
       transform: scale(0.99);
@@ -3592,13 +3598,15 @@
         const totalBuyin = buyIns.reduce((s, b) => s + b.amount, 0);
         const isCashedOut = entry.cash_out !== null && entry.cash_out !== undefined;
 
-        // Build buy-in history block
+        // Build buy-in history block — each row has a ✕ to remove that single buy-in
         let historyHtml = '';
         if (buyIns.length > 0) {
           const rows = buyIns.map((b, i) => `
-            <div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; ${i < buyIns.length - 1 ? 'border-bottom:1px solid var(--border-color);' : ''}">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; padding:5px 0; ${i < buyIns.length - 1 ? 'border-bottom:1px solid var(--border-color);' : ''}">
               <span style="font-size:12px; color:var(--text-secondary);">#${i + 1} · ${new Date(b.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
               <span style="font-size:13px; font-weight:600;">$${b.amount.toLocaleString()}</span>
+              ${!isCashedOut ? `<button onclick="app.removeBuyin('${entry.id}', ${i})"
+                style="padding:3px 9px; border-radius:6px; background:var(--accent-danger)18; color:var(--accent-danger); border:1px solid var(--accent-danger)44; font-size:13px; line-height:1; cursor:pointer; touch-action:manipulation;" aria-label="Remove buy-in">✕</button>` : ''}
             </div>
           `).join('');
           historyHtml = `
@@ -3631,7 +3639,7 @@
           </div>
           <button class="btn btn-secondary btn-block" onclick="app.showCustomRebuyModal('${entry.id}')">Custom Amount</button>
           <button class="btn btn-primary btn-block" onclick="app.showCashOutModal('${entry.id}')">💰 Cash Out</button>
-          ${buyIns.length === 0 ? `<button class="btn btn-danger btn-block" onclick="app.removePlayer('${entry.id}', '${session.id}')">Remove Player</button>` : ''}
+          <button class="btn btn-danger btn-block" onclick="app.confirmRemovePlayer('${entry.id}', '${session.id}')">Remove Player</button>
           ` : `
           <button class="btn btn-secondary btn-block" onclick="app.undoCashOut('${entry.id}')">↩ Undo Cash Out</button>
           `}
@@ -3648,6 +3656,36 @@
         this.renderSessionScreen();
         this.showToast('Buy-in added');
         this.autoSync();
+      },
+
+      // Remove a single buy-in from a player's history (for accidental adds)
+      async removeBuyin(entryId, index) {
+        const entry = await db.get('sessionEntries', entryId);
+        if (!entry || !entry.buy_ins || index < 0 || index >= entry.buy_ins.length) return;
+        const removed = entry.buy_ins[index];
+        entry.buy_ins.splice(index, 1);
+        entry.updated_at = new Date().toISOString();
+        await db.put('sessionEntries', entry);
+        this.showToast(`Removed $${removed.amount.toLocaleString()} buy-in`);
+        // Refresh action sheet so the user sees updated history without closing
+        const player = await app.getPlayer(entry.player_id);
+        this.showPlayerActionSheet(entry, player, this.currentSession);
+        this.renderSessionScreen();
+        this.autoSync();
+      },
+
+      // Remove a player from the session entirely (with confirmation showing what's being discarded)
+      async confirmRemovePlayer(entryId, sessionId) {
+        const entry = await db.get('sessionEntries', entryId);
+        if (!entry) return;
+        const player = await app.getPlayer(entry.player_id);
+        const buyIns = entry.buy_ins || [];
+        const total = buyIns.reduce((s, b) => s + b.amount, 0);
+        const summary = buyIns.length === 0
+          ? `Remove ${player?.name || 'this player'} from the session?`
+          : `Remove ${player?.name || 'this player'}? This discards ${buyIns.length} buy-in${buyIns.length>1?'s':''} totalling $${total.toLocaleString()}.`;
+        if (!confirm(summary)) return;
+        await this.removePlayer(entryId, sessionId);
       },
 
       showCustomRebuyModal(entryId) {
@@ -3773,6 +3811,7 @@
         this.closeActionSheet();
         this.renderSessionScreen();
         this.showToast('Player removed');
+        this.autoSync();
       },
 
       // ── Table Payment: Player A → Player B at the table ──
