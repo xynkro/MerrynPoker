@@ -3399,6 +3399,25 @@
           </div>
         `;
 
+        // Action buttons — at TOP of list (used to be a sticky footer that covered cards on small phones)
+        const topBtns = [];
+        if (isActive && this.isDealer()) {
+          if (this.sessionTab === 'buyins') {
+            topBtns.push(`<button class="btn btn-secondary" onclick="app.addPlayerToSession()" style="flex:1; font-size:13px; padding:11px;">+ Add Player</button>`);
+          } else {
+            topBtns.push(`<button class="btn btn-secondary" onclick="app.showTablePaymentModal()" style="flex:1; font-size:13px; padding:11px; background:var(--accent-warning)22; color:var(--accent-warning); border:1px solid var(--accent-warning)44;">💸 Transfer</button>`);
+            if (this.isOwner()) {
+              topBtns.push(`<button class="btn btn-secondary" onclick="app.showDerrickAdvanceModal()" style="flex:1; font-size:13px; padding:11px; background:var(--accent-primary)22; color:var(--accent-primary); border:1px solid var(--accent-primary)44;">🏦 Advance</button>`);
+            }
+          }
+        }
+        if (!isActive) {
+          topBtns.push(`<button class="btn btn-secondary" onclick="app.currentSession = null; app.renderSessionScreen();" style="flex:1; font-size:13px; padding:11px;">← Back</button>`);
+        }
+        if (topBtns.length > 0) {
+          html += `<div style="padding:0 16px 10px; display:flex; gap:8px;">${topBtns.join('')}</div>`;
+        }
+
         if (this.sessionTab === 'buyins') {
           // ── BUY INS TAB ──────────────────────────────────────────────────────
           html += `<div class="players-grid">`;
@@ -3537,28 +3556,6 @@
                 ${isActive ? `<span style="cursor: pointer; font-size: 16px; opacity: 0.5;" onclick="event.stopPropagation(); app.deleteTablePayment('${tp.id}')">✕</span>` : ''}
               </div>`;
           }
-          html += `</div>`;
-        }
-
-        // Sticky footer — tab-specific actions only
-        const footerBtns = [];
-        if (isActive && this.isDealer()) {
-          if (this.sessionTab === 'buyins') {
-            footerBtns.push(`<button class="btn btn-secondary" onclick="app.addPlayerToSession()" style="flex:1; font-size:13px; padding:11px;">+ Add Player</button>`);
-          } else {
-            // Cash Out tab: Transfer + Advance
-            footerBtns.push(`<button class="btn btn-secondary" onclick="app.showTablePaymentModal()" style="flex:1; font-size:13px; padding:11px; background:var(--accent-warning)22; color:var(--accent-warning); border:1px solid var(--accent-warning)44;">💸 Transfer</button>`);
-            if (this.isOwner()) {
-              footerBtns.push(`<button class="btn btn-secondary" onclick="app.showDerrickAdvanceModal()" style="flex:1; font-size:13px; padding:11px; background:var(--accent-primary)22; color:var(--accent-primary); border:1px solid var(--accent-primary)44;">🏦 Advance</button>`);
-            }
-          }
-        }
-        if (!isActive) {
-          footerBtns.push(`<button class="btn btn-secondary" onclick="app.currentSession = null; app.renderSessionScreen();" style="flex:1; font-size:13px; padding:11px;">← Back</button>`);
-        }
-        if (footerBtns.length > 0) {
-          html += `<div style="position:sticky; bottom:0; background:var(--bg-primary); padding:12px 16px; border-top:1px solid var(--border-color); margin-top:12px; z-index:10; display:flex; gap:8px;">`;
-          html += footerBtns.join('');
           html += `</div>`;
         }
 
