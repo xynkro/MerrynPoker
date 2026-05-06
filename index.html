@@ -50,8 +50,8 @@
       font-size: 18px;
       line-height: 1.5;
       overflow: hidden;
-      position: fixed;
-      touch-action: manipulation;
+      overscroll-behavior: none; /* prevents page rubber-band on iOS without using position:fixed
+                                    (position:fixed on body breaks inner overflow:auto touch-scroll on iOS Safari) */
     }
 
     input, button, textarea, select {
