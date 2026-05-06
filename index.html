@@ -574,10 +574,12 @@
       box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
     }
 
-    /* Alternating row colors so adjacent cards are visually distinct
-       (prevents tapping the wrong row on a long list). */
+    /* Alternating row colors so adjacent cards are visually distinct.
+       Warm charcoal (no blue) on even rows — clearly contrasts with the
+       navy odd rows, evokes the poker felt / leather aesthetic. */
     .players-grid > .player-card:nth-child(even) {
-      background: var(--bg-tertiary);
+      background: #2d2024;
+      border-color: #3a2b30;
     }
 
     .player-card:active {
