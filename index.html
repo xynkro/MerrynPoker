@@ -4143,16 +4143,25 @@
         const entries = await db.getAllByIndex('sessionEntries', 'session_id', this.currentSession.id);
         const addedPlayerIds = new Set(entries.map(e => e.player_id));
 
-        const available = players
-          .filter(p => !addedPlayerIds.has(p.id) && p.role !== 'dealer' && !p.deleted_at)
+        // Show ALL roster players (excluding dealer/deleted). Already-in-session ones
+        // are rendered as disabled badges so the dealer can SEE the full roster — confirms
+        // a newly added player exists, even if they're already in tonight's session.
+        const all = players
+          .filter(p => p.role !== 'dealer' && !p.deleted_at)
           .sort((a, b) => a.name.localeCompare(b.name));
+        const available = all.filter(p => !addedPlayerIds.has(p.id));
+        const inSession = all.filter(p => addedPlayerIds.has(p.id));
 
         const modal = document.getElementById('modal');
         document.getElementById('modalTitle').textContent = 'Add Players';
 
-        const rows = available.map(p => this._buildAddPlayerRowHTML(p)).join('');
+        const rowsAvail = available.map(p => this._buildAddPlayerRowHTML(p, false)).join('');
+        const rowsAdded = inSession.map(p => this._buildAddPlayerRowHTML(p, true)).join('');
+        const inSessionSection = inSession.length > 0
+          ? `<div style="font-size:11px; color:var(--text-secondary); padding:10px 4px 4px; font-weight:600; letter-spacing:0.5px; text-transform:uppercase;">In this session</div>${rowsAdded}`
+          : '';
         const emptyMsg = available.length === 0
-          ? `<div id="addPlayerEmpty" style="text-align:center; padding:18px 8px; color:var(--text-secondary); font-size:13px;">All roster players are already in this session.<br>Type a name above to add a new player.</div>`
+          ? `<div id="addPlayerEmpty" style="text-align:center; padding:18px 8px; color:var(--text-secondary); font-size:13px;">All roster players are already in this session.<br>Tap <b>+ Add New Player</b> above to create someone new.</div>`
           : '';
 
         document.getElementById('modalBody').innerHTML = `
@@ -4191,8 +4200,9 @@
               <label for="chkAll" style="flex:1; font-size:13px; color:var(--text-secondary); font-weight:600; cursor:pointer;">Select All</label>
               <span style="font-size:12px; color:var(--text-secondary); width:90px; text-align:center;">Buy-in</span>
             </div>
-            <div id="addPlayerRows">${rows}</div>
+            <div id="addPlayerRows">${rowsAvail}</div>
             ${emptyMsg}
+            ${inSessionSection}
           </div>
           <div id="bulkAddSummary" style="margin-top:10px; font-size:13px; color:var(--text-secondary); text-align:center;">0 players selected</div>
         `;
@@ -4204,9 +4214,20 @@
         modal.classList.add('show');
       },
 
-      _buildAddPlayerRowHTML(p) {
+      _buildAddPlayerRowHTML(p, alreadyInSession = false) {
         const safeName = this._esc(p.name);
         const bankBadge = p.role === 'bank' ? ' 🏦' : '';
+        if (alreadyInSession) {
+          // Disabled, informational row — shows the dealer that this player IS in the roster
+          return `
+            <div data-player-row data-player-name="${safeName}" data-in-session="1"
+              style="display:flex; align-items:center; gap:10px; padding:10px 4px; border-bottom:1px solid var(--border-color); opacity:0.55;">
+              <span style="width:22px; height:22px; flex-shrink:0; display:flex; align-items:center; justify-content:center; color:var(--accent-success); font-size:16px;">✓</span>
+              <span style="flex:1; font-size:15px; font-weight:600;">${safeName}${bankBadge}</span>
+              <span style="font-size:11px; color:var(--accent-success); font-weight:700; letter-spacing:0.3px;">IN SESSION</span>
+            </div>
+          `;
+        }
         return `
           <div data-player-row data-player-name="${safeName}" style="display:flex; align-items:center; gap:10px; padding:10px 4px; border-bottom:1px solid var(--border-color);">
             <input type="checkbox" id="chk_${p.id}" value="${p.id}"
