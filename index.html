@@ -3522,7 +3522,7 @@
             if (activeEntries.length > 0) {
               html += `<div style="font-size: 11px; color: var(--text-secondary); padding: 8px 4px 2px; font-weight:600; letter-spacing:0.5px; text-transform:uppercase;">Cashed Out</div>`;
             }
-            const methodIcons = { pot: '🃏', cash: '💵', other_players: '👥', mixed: '⚖️' };
+            const methodIcons = { pot: '🃏', cash: '💵', other_players: '👥', mixed: '⚖️', uncleared: '📋' };
             for (const entry of finishedEntries) {
               const player = playerMap[entry.player_id];
               const totalBuyin = (entry.buy_ins || []).reduce((sum, b) => sum + b.amount, 0);
@@ -3620,7 +3620,7 @@
           // Settlement summary block (only shown once cashed out)
           let settlementHtml = '';
           if (isCashedOut) {
-            const methodLabels = { pot: '🃏 Pot', cash: '💵 Cash', other_players: '👥 Other Players', mixed: '⚖️ Mixed' };
+            const methodLabels = { pot: '🃏 Pot', cash: '💵 Cash', other_players: '👥 Other Players', mixed: '⚖️ Mixed', uncleared: '📋 Uncleared (carry)' };
             const methodLabel = methodLabels[entry.settlement_method] || (entry.settlement_method ? entry.settlement_method : '—');
             const paid = entry.paid_amount ?? entry.cash_out;
             const balance = entry.cash_out - paid;
@@ -3787,6 +3787,11 @@
               ${methodBtn('other_players', '👥 Other Players')}
               ${methodBtn('mixed', '⚖️ Mixed / Multiple')}
             </div>
+            <div style="margin-top:6px;">
+              <button type="button" data-method="uncleared" onclick="app._coPickMethod(this)"
+                style="width:100%; padding:11px 8px; background:var(--bg-tertiary); border:1px dashed var(--accent-warning)55; color:var(--accent-warning);
+                       border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; touch-action:manipulation;">📋 Uncleared — adds to Carries</button>
+            </div>
           </div>
 
           <div class="form-group">
@@ -3852,8 +3857,20 @@
         const paid   = this._coReadAmt('coPaid');
         const el = document.getElementById('coBalance');
         if (!el) return;
+        const sel = document.querySelector('#modalBody [data-method][data-selected]');
+        const method = sel?.dataset.method;
+
         if (paid === 0 && amount === 0) { el.textContent = ''; return; }
-        // If paid is blank/0, treat as full
+
+        // For 'uncleared' nothing is paid — full amount is the carry
+        if (method === 'uncleared') {
+          if (amount === 0) { el.textContent = ''; return; }
+          el.textContent = `Carry: $${amount.toLocaleString()} → Carries tab`;
+          el.style.color = 'var(--accent-warning)';
+          return;
+        }
+
+        // Otherwise: blank paid = paid in full
         const effectivePaid = paid === 0 ? amount : paid;
         const bal = amount - effectivePaid;
         if (bal === 0) {
@@ -3869,15 +3886,36 @@
       },
 
       _coPickMethod(btn) {
+        const isUncleared = btn.dataset.method === 'uncleared';
         document.querySelectorAll('#modalBody [data-method]').forEach(b => {
-          b.style.background = 'var(--bg-tertiary)';
-          b.style.borderColor = 'var(--border-color)';
-          b.style.color = 'var(--text-primary)';
+          // Reset to default look. Uncleared has its own dashed default.
+          if (b.dataset.method === 'uncleared') {
+            b.style.background = 'var(--bg-tertiary)';
+            b.style.borderStyle = 'dashed';
+            b.style.borderColor = 'rgba(255,217,61,0.33)';
+            b.style.color = 'var(--accent-warning)';
+          } else {
+            b.style.background = 'var(--bg-tertiary)';
+            b.style.borderStyle = 'solid';
+            b.style.borderColor = 'var(--border-color)';
+            b.style.color = 'var(--text-primary)';
+          }
           delete b.dataset.selected;
         });
-        btn.style.background = 'rgba(78,204,163,0.18)';
-        btn.style.borderColor = 'rgba(78,204,163,0.55)';
-        btn.style.color = 'var(--accent-success)';
+        if (isUncleared) {
+          btn.style.background = 'rgba(255,217,61,0.18)';
+          btn.style.borderStyle = 'solid';
+          btn.style.borderColor = 'rgba(255,217,61,0.7)';
+          btn.style.color = 'var(--accent-warning)';
+          // Uncleared = nothing paid → reset paid to 0 so balance reflects the full carry
+          const paidEl = document.getElementById('coPaid');
+          if (paidEl) paidEl.value = '';
+          this._updateCoBalance();
+        } else {
+          btn.style.background = 'rgba(78,204,163,0.18)';
+          btn.style.borderColor = 'rgba(78,204,163,0.55)';
+          btn.style.color = 'var(--accent-success)';
+        }
         btn.dataset.selected = '1';
       },
 
@@ -3892,7 +3930,7 @@
         const entry = await db.get('sessionEntries', entryId);
         if (!entry) return;
 
-        // Snapshot for undo (legacy single-field undo + full snapshot)
+        // Snapshot for undo
         this.lastCashout = {
           entryId,
           prevCashOut: entry.cash_out,
@@ -3905,15 +3943,67 @@
         entry.cash_out          = amount;
         entry.net_pl            = amount - buyin;
         entry.settlement_method = method;
-        entry.paid_amount       = paid > 0 ? paid : amount; // blank means paid in full
+        entry.paid_amount       = method === 'uncleared' ? 0 : (paid > 0 ? paid : amount);
         entry.notes             = notes || null;
         entry.updated_at        = new Date().toISOString();
+
+        // Carry handling: 'uncleared' means create / sync a carry record so the
+        // outstanding amount surfaces on the Carries tab. Switching away from
+        // 'uncleared' soft-deletes any previously-linked carry.
+        await this._syncEntryCarry(entry);
+
         await db.put('sessionEntries', entry);
 
         this.closeModal();
         this.renderSessionScreen();
-        this.showUndoToast('Cashout saved');
+        this.showUndoToast(method === 'uncleared' ? 'Cashout saved · added to Carries' : 'Cashout saved');
         this.autoSync();
+      },
+
+      // Mutates entry.linked_carry_id. Called from commitCashout and undoCashOut.
+      async _syncEntryCarry(entry) {
+        const isUncleared = entry.settlement_method === 'uncleared';
+        const session = this.currentSession;
+        const sessionLabel = session ? new Date(session.date).toLocaleDateString('en-GB', { day:'numeric', month:'short' }) : '';
+        const player = await app.getPlayer(entry.player_id);
+        const note = `Session ${sessionLabel}${player?.name ? ' · ' + player.name : ''} — Uncleared cashout`;
+
+        if (isUncleared && entry.net_pl !== 0) {
+          if (entry.linked_carry_id) {
+            const carry = await db.get('carryBalances', entry.linked_carry_id);
+            if (carry && !carry.deleted_at) {
+              carry.amount_sgd = entry.net_pl;
+              carry.note = note;
+              carry.updated_at = new Date().toISOString();
+              await db.put('carryBalances', carry);
+              return;
+            }
+            // Stale link — fall through to create
+          }
+          const id = crypto.randomUUID();
+          await db.put('carryBalances', {
+            id,
+            player_id: entry.player_id,
+            amount_sgd: entry.net_pl,
+            origin_session_id: session?.id || null,
+            origin_entry_id: entry.id,
+            status: 'open',
+            cleared_at: null,
+            cleared_via: null,
+            rate_used: null,
+            usdt_amount: null,
+            note,
+            updated_at: new Date().toISOString(),
+            deleted_at: null,
+          });
+          entry.linked_carry_id = id;
+        } else {
+          // Not uncleared (or net_pl is zero) — clean up any existing linked carry.
+          if (entry.linked_carry_id) {
+            await db.softDelete('carryBalances', entry.linked_carry_id);
+            entry.linked_carry_id = null;
+          }
+        }
       },
 
       // Cancel = wipe the cashout and put the player back to "in play"
@@ -3926,6 +4016,11 @@
       async undoCashOut(entryId) {
         const entry = await db.get('sessionEntries', entryId);
         if (!entry) return;
+        // Soft-delete any linked carry so reverting fully unwinds the cashout
+        if (entry.linked_carry_id) {
+          await db.softDelete('carryBalances', entry.linked_carry_id);
+          entry.linked_carry_id = null;
+        }
         entry.cash_out          = null;
         entry.net_pl            = 0;
         entry.settlement_method = null;
