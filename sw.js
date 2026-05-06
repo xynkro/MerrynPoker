@@ -3,7 +3,7 @@
 // Apps Script (cross-origin) is intentionally NOT intercepted — the app must
 // always hit the network for sync.
 
-const CACHE = 'merryn-v1';
+const CACHE = 'merryn-v2';
 
 const ASSETS = [
   './',

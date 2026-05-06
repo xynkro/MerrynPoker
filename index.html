@@ -320,7 +320,11 @@
     .screen {
       display: none;
       flex: 1;
+      min-height: 0; /* lets the flex parent shrink; required for inner overflow:auto to work in flex column */
       overflow-y: auto;
+      -webkit-overflow-scrolling: touch; /* iOS momentum scroll */
+      overscroll-behavior: contain;
+      touch-action: pan-y; /* override body's touch-action: manipulation so vertical scroll always works */
       /* nav buttons ~52px + safe area; extra 8px buffer */
       padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
     }
@@ -4156,17 +4160,19 @@
 
         document.getElementById('modalBody').innerHTML = `
           <div style="margin-bottom:10px;">
-            <div style="position:relative;">
-              <input type="search" id="addPlayerSearch" placeholder="🔍 Search or add new player…" autocomplete="off" autocapitalize="words" enterkeyhint="search"
-                style="width:100%; padding:11px 86px 11px 12px; background:var(--bg-tertiary); color:var(--text-primary);
-                       border:1px solid var(--border-color); border-radius:10px; font-size:16px; box-sizing:border-box; touch-action:manipulation;"
-                oninput="app._filterAddPlayerList(this.value)"
-                onkeydown="if(event.key==='Enter'){event.preventDefault(); app._quickAddNewPlayerFromSearch();}">
-              <button id="addPlayerQuickBtn" type="button" onclick="app._quickAddNewPlayerFromSearch()"
-                style="display:none; position:absolute; right:6px; top:50%; transform:translateY(-50%);
-                       padding:7px 12px; background:var(--accent-primary); color:#fff; border:none; border-radius:8px;
-                       font-size:13px; font-weight:700; cursor:pointer; touch-action:manipulation;">+ Add</button>
-            </div>
+            <input type="search" id="addPlayerSearch" placeholder="🔍 Search players…" autocomplete="off" autocapitalize="words" enterkeyhint="search"
+              style="width:100%; padding:11px 12px; background:var(--bg-tertiary); color:var(--text-primary);
+                     border:1px solid var(--border-color); border-radius:10px; font-size:16px; box-sizing:border-box; touch-action:manipulation;"
+              oninput="app._filterAddPlayerList(this.value)"
+              onkeydown="if(event.key==='Enter'){event.preventDefault(); app._quickAddNewPlayerFromSearch();}">
+            <button type="button" onclick="app._quickAddNewPlayerPrompt()"
+              style="display:flex; align-items:center; justify-content:center; gap:6px;
+                     width:100%; margin-top:8px; padding:10px;
+                     background:var(--accent-primary)18; border:1px dashed var(--accent-primary)66;
+                     color:var(--accent-primary); border-radius:10px;
+                     font-size:14px; font-weight:700; cursor:pointer; touch-action:manipulation;">
+              <span style="font-size:18px; line-height:1;">+</span> Add New Player
+            </button>
             <div id="addPlayerSearchHint" style="display:none; margin-top:6px; font-size:12px; color:var(--text-secondary); text-align:center;"></div>
           </div>
           <div style="margin-bottom:10px;">
@@ -4236,29 +4242,62 @@
         });
 
         const hint = document.getElementById('addPlayerSearchHint');
-        const quickBtn = document.getElementById('addPlayerQuickBtn');
         const empty = document.getElementById('addPlayerEmpty');
         const selectAll = document.getElementById('addPlayerSelectAllRow');
 
-        // Empty-state hint hides when user is searching
         if (empty) empty.style.display = q ? 'none' : '';
-        // Hide select-all bar if there are no visible rows
         if (selectAll && rows.length > 0) selectAll.style.display = visible > 0 ? 'flex' : 'none';
 
-        if (q) {
-          if (quickBtn) quickBtn.style.display = '';
-          if (hint) {
-            if (visible === 0) {
-              hint.style.display = '';
-              hint.innerHTML = `No match — tap <b>+ Add</b> or press Enter to create "${this._esc(query.trim())}".`;
-            } else {
-              hint.style.display = 'none';
-            }
+        if (hint) {
+          if (q && visible === 0) {
+            hint.style.display = '';
+            hint.innerHTML = `No match — press Enter or tap <b>+ Add New Player</b> above to create "${this._esc(query.trim())}".`;
+          } else {
+            hint.style.display = 'none';
           }
-        } else {
-          if (quickBtn) quickBtn.style.display = 'none';
-          if (hint) hint.style.display = 'none';
         }
+      },
+
+      // Always-visible quick add: opens a name prompt. Creates a roster entry, reopens
+      // the Add Players modal with the new player auto-checked, ready for buy-in.
+      _quickAddNewPlayerPrompt() {
+        const searchEl = document.getElementById('addPlayerSearch');
+        const prefill = (searchEl?.value || '').trim();
+        this._modalPrompt({
+          title: 'Add New Player',
+          label: 'Name (added to roster)',
+          defaultValue: prefill,
+          placeholder: 'e.g. Alex',
+          okLabel: 'Add',
+          validator: async (name) => {
+            if (!name) return 'Name cannot be empty';
+            const all = await db.getAll('players');
+            if (all.find(p => !p.deleted_at && p.name.toLowerCase() === name.toLowerCase())) return 'Name already exists in roster';
+            return null;
+          },
+          onOk: async (name) => {
+            const newPlayer = {
+              id: crypto.randomUUID(),
+              name,
+              role: 'player',
+              preferred_payout: 'either',
+              restricted_view: false,
+              updated_at: new Date().toISOString(),
+              deleted_at: null,
+            };
+            await db.put('players', newPlayer);
+            this.showToast(`Added ${name}`);
+            await this.addPlayerToSession();
+            const cb = document.getElementById(`chk_${newPlayer.id}`);
+            if (cb) {
+              cb.checked = true;
+              this._updateBulkAddBtn();
+              cb.closest('[data-player-row]')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            }
+            if (typeof this.autoSync === 'function') this.autoSync();
+          },
+          onCancel: () => this.addPlayerToSession(),
+        });
       },
 
       _toggleSelectAllVisible(checked) {
