@@ -1,0 +1,35 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Office lock files
+.~lock.*
+~$*
+
+# Sensitive data — NEVER commit financial records, backups, or database exports
+*.xlsx
+*.xls
+*.csv
+*.json
+!manifest.json
+*.sqlite
+*.db
+backups/
+
+# Old/archived HTML versions
+merryn-poker.html
+
+# Empty dirs
+Poker App/
+
+# Node (if ever added)
+node_modules/
+
+# Local-only duplicates / archives
+merryn-poker-repo/
+merryn-poker-repo.zip
+ziOBWyDD
+
+# Local Claude Code preview config (per-machine)
+.claude/

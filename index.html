@@ -7,12 +7,22 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="Merryn Poker">
   <meta name="theme-color" content="#0f0f1a">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
   <title>Merryn Poker</title>
   <style>
     * {
       margin: 0;
       padding: 0;
       box-sizing: border-box;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    html {
+      -webkit-text-size-adjust: 100%;
+      text-size-adjust: 100%;
     }
 
     :root {
@@ -655,7 +665,7 @@
       background: var(--bg-secondary);
       border-radius: var(--border-radius-card) var(--border-radius-card) 0 0;
       padding: 20px 16px 16px;
-      max-height: 90vh;
+      max-height: 90dvh;
       overflow-y: auto;
       display: none;
       z-index: 2001;
@@ -1312,8 +1322,9 @@
       padding: 24px;
       max-width: 400px;
       width: 100%;
-      max-height: 90vh;
+      max-height: 90dvh; /* dvh follows iOS Safari toolbar collapse */
       overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
     }
 
     .modal-title {
@@ -1344,7 +1355,7 @@
     /* Toast */
     .toast {
       position: fixed;
-      bottom: 100px;
+      bottom: calc(80px + env(safe-area-inset-bottom, 0px));
       left: 16px;
       right: 16px;
       padding: 20px;
@@ -1410,7 +1421,7 @@
       border: 1px solid var(--border-color);
       color: var(--text-primary);
       border-radius: var(--border-radius-btn);
-      font-size: 14px;
+      font-size: 16px; /* iOS Safari: anything <16px triggers zoom-on-focus */
     }
 
     .form-input::placeholder {
@@ -1727,8 +1738,11 @@
             <div id="myProfileBody"></div>
           </div>
 
+          <!-- Manage Players: visible to dealer + owner. Lives outside the Admin owner-PIN gate so Sarah can use it. -->
           <div class="settings-section" id="settingsPlayersSection" style="display:none;">
-            <!-- Legacy section kept hidden; Player Profiles are managed under Admin -->
+            <div class="settings-section-title">Players</div>
+            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;">Add, rename, delete, reset PINs, toggle Restricted View.</div>
+            <button class="btn btn-secondary btn-block" onclick="app.showAdminPlayerList()">Manage Players</button>
           </div>
 
           <div class="settings-section">
@@ -1798,12 +1812,6 @@
                 <div id="syncStatus" style="padding: 8px 12px; border-radius: 8px; background: var(--surface); font-size: 12px; color: var(--text-secondary); text-align: center;">
                   Not synced yet
                 </div>
-              </div>
-
-              <div class="settings-section">
-                <div class="settings-section-title">Player Profiles</div>
-                <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;">Add, rename, delete players; reset PINs; toggle Restricted View (hides Session + History from the player).</div>
-                <button class="btn btn-secondary btn-block" onclick="app.showAdminPlayerList()">Manage Player Profiles</button>
               </div>
 
               <div class="settings-section">
@@ -3033,7 +3041,7 @@
           document.getElementById('modalBody').innerHTML = `
             <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 12px;">Use positive number to add, negative to subtract.</div>
             <input type="number" id="dsAdjAmount" placeholder="e.g. 5000 or -3000" style="width: 100%; padding: 12px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 8px; font-size: 20px; text-align: center;" inputmode="numeric">
-            <input type="text" id="dsAdjNote" placeholder="Note (optional)" style="width: 100%; padding: 10px; margin-top: 8px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 8px; font-size: 14px;">
+            <input type="text" id="dsAdjNote" placeholder="Note (optional)" style="width: 100%; padding: 10px; margin-top: 8px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 8px; font-size: 16px;">
           `;
           document.getElementById('modalFooter').innerHTML = `
             <button class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
@@ -4138,55 +4146,52 @@
           .filter(p => !addedPlayerIds.has(p.id) && p.role !== 'dealer' && !p.deleted_at)
           .sort((a, b) => a.name.localeCompare(b.name));
 
-        if (available.length === 0) {
-          this.showToast('All roster players are already in the session');
-          return;
-        }
-
         const modal = document.getElementById('modal');
         document.getElementById('modalTitle').textContent = 'Add Players';
 
-        // Per-player rows: checkbox + name + individual buy-in input
-        const rows = available.map(p => `
-          <div style="display: flex; align-items: center; gap: 10px; padding: 10px 4px; border-bottom: 1px solid var(--border-color);">
-            <input type="checkbox" id="chk_${p.id}" value="${p.id}"
-              style="width: 22px; height: 22px; accent-color: var(--accent-primary); cursor: pointer; flex-shrink: 0; touch-action: manipulation;"
-              onchange="app._updateBulkAddBtn()">
-            <label for="chk_${p.id}" style="flex: 1; font-size: 15px; font-weight: 600; cursor: pointer; touch-action: manipulation;">
-              ${p.name}${p.role === 'bank' ? ' 🏦' : ''}
-            </label>
-            <input type="text" inputmode="numeric" id="buyin_${p.id}" value="" placeholder="Amount"
-              style="width: 90px; padding: 7px 8px; background: var(--bg-tertiary); color: var(--text-primary);
-                     border: 1px solid var(--border-color); border-radius: 8px; font-size: 14px;
-                     text-align: center; font-weight: 700; touch-action: manipulation;"
-              onclick="this.select()"
-              oninput="app._fmtBuyinInput(this); app._updateBulkAddBtn();">
-          </div>
-        `).join('');
+        const rows = available.map(p => this._buildAddPlayerRowHTML(p)).join('');
+        const emptyMsg = available.length === 0
+          ? `<div id="addPlayerEmpty" style="text-align:center; padding:18px 8px; color:var(--text-secondary); font-size:13px;">All roster players are already in this session.<br>Type a name above to add a new player.</div>`
+          : '';
 
         document.getElementById('modalBody').innerHTML = `
-          <div style="margin-bottom: 10px;">
-            <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">Quick-fill all amounts:</div>
-            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+          <div style="margin-bottom:10px;">
+            <div style="position:relative;">
+              <input type="search" id="addPlayerSearch" placeholder="🔍 Search or add new player…" autocomplete="off" autocapitalize="words" enterkeyhint="search"
+                style="width:100%; padding:11px 86px 11px 12px; background:var(--bg-tertiary); color:var(--text-primary);
+                       border:1px solid var(--border-color); border-radius:10px; font-size:16px; box-sizing:border-box; touch-action:manipulation;"
+                oninput="app._filterAddPlayerList(this.value)"
+                onkeydown="if(event.key==='Enter'){event.preventDefault(); app._quickAddNewPlayerFromSearch();}">
+              <button id="addPlayerQuickBtn" type="button" onclick="app._quickAddNewPlayerFromSearch()"
+                style="display:none; position:absolute; right:6px; top:50%; transform:translateY(-50%);
+                       padding:7px 12px; background:var(--accent-primary); color:#fff; border:none; border-radius:8px;
+                       font-size:13px; font-weight:700; cursor:pointer; touch-action:manipulation;">+ Add</button>
+            </div>
+            <div id="addPlayerSearchHint" style="display:none; margin-top:6px; font-size:12px; color:var(--text-secondary); text-align:center;"></div>
+          </div>
+          <div style="margin-bottom:10px;">
+            <div style="font-size:12px; color:var(--text-secondary); margin-bottom:6px;">Quick-fill all amounts:</div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
               ${[10000,20000,30000,50000].map(a =>
                 `<button onclick="document.querySelectorAll('[id^=buyin_]').forEach(i=>i.value='${a.toLocaleString()}'); app._updateBulkAddBtn();"
-                  style="flex:1; min-width:52px; padding: 7px 4px; background: var(--bg-tertiary); color: var(--text-secondary);
-                         border: 1px solid var(--border-color); border-radius: 6px; font-size: 13px;
-                         touch-action: manipulation; cursor: pointer;">${a/1000}k</button>`
+                  style="flex:1; min-width:52px; padding:7px 4px; background:var(--bg-tertiary); color:var(--text-secondary);
+                         border:1px solid var(--border-color); border-radius:6px; font-size:13px;
+                         touch-action:manipulation; cursor:pointer;">${a/1000}k</button>`
               ).join('')}
             </div>
           </div>
-          <div style="max-height: 320px; overflow-y: auto;">
-            <div style="display: flex; align-items: center; gap: 10px; padding: 8px 4px; border-bottom: 2px solid var(--border-color); margin-bottom: 2px;">
+          <div style="max-height:320px; overflow-y:auto; -webkit-overflow-scrolling:touch;">
+            <div id="addPlayerSelectAllRow" style="display:${available.length === 0 ? 'none' : 'flex'}; align-items:center; gap:10px; padding:8px 4px; border-bottom:2px solid var(--border-color); margin-bottom:2px;">
               <input type="checkbox" id="chkAll"
-                style="width: 22px; height: 22px; accent-color: var(--accent-warning); cursor: pointer; flex-shrink: 0; touch-action: manipulation;"
-                onchange="document.querySelectorAll('[id^=chk_]').forEach(c=>c.checked=this.checked); app._updateBulkAddBtn();">
-              <label for="chkAll" style="flex: 1; font-size: 13px; color: var(--text-secondary); font-weight: 600; cursor: pointer;">Select All</label>
-              <span style="font-size: 12px; color: var(--text-secondary); width: 90px; text-align: center;">Buy-in</span>
+                style="width:22px; height:22px; accent-color:var(--accent-warning); cursor:pointer; flex-shrink:0; touch-action:manipulation;"
+                onchange="app._toggleSelectAllVisible(this.checked)">
+              <label for="chkAll" style="flex:1; font-size:13px; color:var(--text-secondary); font-weight:600; cursor:pointer;">Select All</label>
+              <span style="font-size:12px; color:var(--text-secondary); width:90px; text-align:center;">Buy-in</span>
             </div>
-            ${rows}
+            <div id="addPlayerRows">${rows}</div>
+            ${emptyMsg}
           </div>
-          <div id="bulkAddSummary" style="margin-top: 10px; font-size: 13px; color: var(--text-secondary); text-align: center;">0 players selected</div>
+          <div id="bulkAddSummary" style="margin-top:10px; font-size:13px; color:var(--text-secondary); text-align:center;">0 players selected</div>
         `;
 
         document.getElementById('modalFooter').innerHTML = `
@@ -4194,6 +4199,133 @@
           <button class="btn btn-primary" id="bulkAddBtn" onclick="app.commitBulkAddPlayers()" disabled>Add (0)</button>
         `;
         modal.classList.add('show');
+      },
+
+      _buildAddPlayerRowHTML(p) {
+        const safeName = this._esc(p.name);
+        const bankBadge = p.role === 'bank' ? ' 🏦' : '';
+        return `
+          <div data-player-row data-player-name="${safeName}" style="display:flex; align-items:center; gap:10px; padding:10px 4px; border-bottom:1px solid var(--border-color);">
+            <input type="checkbox" id="chk_${p.id}" value="${p.id}"
+              style="width:22px; height:22px; accent-color:var(--accent-primary); cursor:pointer; flex-shrink:0; touch-action:manipulation;"
+              onchange="app._updateBulkAddBtn()">
+            <label for="chk_${p.id}" style="flex:1; font-size:15px; font-weight:600; cursor:pointer; touch-action:manipulation;">
+              ${safeName}${bankBadge}
+            </label>
+            <input type="text" inputmode="numeric" id="buyin_${p.id}" value="" placeholder="Amount"
+              style="width:96px; padding:7px 8px; background:var(--bg-tertiary); color:var(--text-primary);
+                     border:1px solid var(--border-color); border-radius:8px; font-size:16px;
+                     text-align:center; font-weight:700; touch-action:manipulation;"
+              onclick="this.select()"
+              oninput="app._fmtBuyinInput(this); app._updateBulkAddBtn();">
+          </div>
+        `;
+      },
+
+      _filterAddPlayerList(query) {
+        const q = (query || '').trim().toLowerCase();
+        const list = document.getElementById('addPlayerRows');
+        if (!list) return;
+        const rows = list.querySelectorAll('[data-player-row]');
+        let visible = 0;
+        rows.forEach(row => {
+          const name = (row.dataset.playerName || '').toLowerCase();
+          const matches = !q || name.includes(q);
+          row.style.display = matches ? '' : 'none';
+          if (matches) visible++;
+        });
+
+        const hint = document.getElementById('addPlayerSearchHint');
+        const quickBtn = document.getElementById('addPlayerQuickBtn');
+        const empty = document.getElementById('addPlayerEmpty');
+        const selectAll = document.getElementById('addPlayerSelectAllRow');
+
+        // Empty-state hint hides when user is searching
+        if (empty) empty.style.display = q ? 'none' : '';
+        // Hide select-all bar if there are no visible rows
+        if (selectAll && rows.length > 0) selectAll.style.display = visible > 0 ? 'flex' : 'none';
+
+        if (q) {
+          if (quickBtn) quickBtn.style.display = '';
+          if (hint) {
+            if (visible === 0) {
+              hint.style.display = '';
+              hint.innerHTML = `No match — tap <b>+ Add</b> or press Enter to create "${this._esc(query.trim())}".`;
+            } else {
+              hint.style.display = 'none';
+            }
+          }
+        } else {
+          if (quickBtn) quickBtn.style.display = 'none';
+          if (hint) hint.style.display = 'none';
+        }
+      },
+
+      _toggleSelectAllVisible(checked) {
+        const list = document.getElementById('addPlayerRows');
+        if (!list) return;
+        list.querySelectorAll('[data-player-row]').forEach(row => {
+          if (row.style.display === 'none') return;
+          const cb = row.querySelector('input[type=checkbox]');
+          if (cb) cb.checked = !!checked;
+        });
+        this._updateBulkAddBtn();
+      },
+
+      async _quickAddNewPlayerFromSearch() {
+        const searchEl = document.getElementById('addPlayerSearch');
+        const raw = (searchEl?.value || '').trim().replace(/\s+/g, ' ');
+        if (!raw) { searchEl?.focus(); return; }
+
+        const all = await db.getAll('players');
+        const existing = all.find(p => !p.deleted_at && p.name.toLowerCase() === raw.toLowerCase());
+        if (existing) {
+          if (existing.role === 'dealer') { this.showToast(`${existing.name} is the dealer`); return; }
+          const entries = await db.getAllByIndex('sessionEntries', 'session_id', this.currentSession.id);
+          if (entries.some(e => e.player_id === existing.id)) {
+            this.showToast(`${existing.name} is already in this session`);
+            return;
+          }
+          // Match exists in roster but not in session — clear search, check it, scroll into view
+          if (searchEl) searchEl.value = '';
+          this._filterAddPlayerList('');
+          const cb = document.getElementById(`chk_${existing.id}`);
+          if (cb) {
+            cb.checked = true;
+            this._updateBulkAddBtn();
+            cb.closest('[data-player-row]')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          }
+          return;
+        }
+
+        const newPlayer = {
+          id: crypto.randomUUID(),
+          name: raw,
+          role: 'player',
+          preferred_payout: 'either',
+          restricted_view: false,
+          updated_at: new Date().toISOString(),
+          deleted_at: null,
+        };
+        await db.put('players', newPlayer);
+
+        const list = document.getElementById('addPlayerRows');
+        if (list) {
+          const tmp = document.createElement('div');
+          tmp.innerHTML = this._buildAddPlayerRowHTML(newPlayer).trim();
+          const newEl = tmp.firstElementChild;
+          const rows = [...list.querySelectorAll('[data-player-row]')];
+          const before = rows.find(r => (r.dataset.playerName || '').localeCompare(raw) > 0);
+          if (before) list.insertBefore(newEl, before); else list.appendChild(newEl);
+          const cb = document.getElementById(`chk_${newPlayer.id}`);
+          if (cb) cb.checked = true;
+        }
+
+        if (searchEl) searchEl.value = '';
+        this._filterAddPlayerList('');
+        this._updateBulkAddBtn();
+        this.showToast(`Added ${raw}`);
+        if (typeof this.autoSync === 'function') this.autoSync();
       },
 
       _fmtBuyinInput(input) {
@@ -4247,22 +4379,6 @@
         this.showToast(`${added} player${added>1?'s':''} added`);
         this.renderSessionScreen();
         this.autoSync();
-      },
-
-      async addPlayerToCurrentSession(playerId, buyIn = 0) {
-        await db.put('sessionEntries', {
-          id: crypto.randomUUID(),
-          session_id: this.currentSession.id,
-          player_id: playerId,
-          buy_ins: buyIn > 0 ? [{ amount: buyIn, timestamp: new Date().toISOString() }] : [],
-          cash_out: null,
-          net_pl: 0,
-          settlement_method: null,
-          updated_at: new Date().toISOString(),
-          deleted_at: null,
-        });
-        this.showToast('Player added');
-        this.renderSessionScreen();
       },
 
       async endSession() {
@@ -4880,8 +4996,6 @@
         }
       },
 
-      // switchHistoryTab removed — Stats is now standalone tab
-
       async renderPlayerStats() {
         const sessions = await db.getAll('sessions');
         const allEntries = await db.getAll('sessionEntries');
@@ -5273,122 +5387,6 @@
             }, 230);
           }
         });
-      },
-
-      // Generic horizontal swipe helper (still used elsewhere).
-      _attachHSwipe(el, onRight, onLeft, currentSide) {
-        let startX = 0, startY = 0, moved = false;
-        const threshold = 60;
-        el.addEventListener('touchstart', (e) => {
-          startX = e.touches[0].clientX;
-          startY = e.touches[0].clientY;
-          moved = false;
-        }, { passive: true });
-        el.addEventListener('touchmove', (e) => {
-          const dx = e.touches[0].clientX - startX;
-          const dy = Math.abs(e.touches[0].clientY - startY);
-          if (Math.abs(dx) > 10 && Math.abs(dx) > dy) moved = true;
-        }, { passive: true });
-        el.addEventListener('touchend', (e) => {
-          if (!moved) return;
-          const dx = e.changedTouches[0].clientX - startX;
-          if (dx <= -threshold && onLeft) onLeft();
-          else if (dx >= threshold && onRight) onRight();
-        });
-      },
-
-      // Renders a compact "My Stats" summary card for the logged-in player.
-      async renderMyStatsInline(playerId) {
-        const player = await db.get('players', playerId);
-        const allEntries = await db.getAll('sessionEntries');
-        const sessions = await db.getAll('sessions');
-        const target = document.getElementById('myStatsInline');
-        if (!player) { target.innerHTML = ''; return; }
-
-        const entries = allEntries.filter(e => e.player_id === playerId && !e.deleted_at);
-        if (entries.length === 0) {
-          target.innerHTML = `
-            <div style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; padding: 30px 20px; text-align: center;">
-              <div style="font-size: 16px; font-weight: 700; margin-bottom: 6px;">Welcome, ${player.name}</div>
-              <div style="color: var(--text-secondary); font-size: 13px;">No sessions yet — check back after you play your first game.</div>
-            </div>`;
-          return;
-        }
-
-        const sessionMap = {}; sessions.forEach(s => sessionMap[s.id] = s);
-        const withDates = entries.map(e => ({ entry: e, date: sessionMap[e.session_id]?.date || '' }))
-                                 .sort((a, b) => new Date(a.date) - new Date(b.date));
-        const totalBuyin = entries.reduce((s, e) => s + (e.buy_ins || []).reduce((ss, b) => ss + b.amount, 0), 0);
-        const totalNet = entries.reduce((s, e) => s + (e.net_pl || 0), 0);
-        const wins = entries.filter(e => (e.net_pl || 0) > 0).length;
-        const winRate = (wins / entries.length * 100).toFixed(0);
-        const nets = entries.map(e => e.net_pl || 0);
-        const best = Math.max(...nets);
-        const worst = Math.min(...nets);
-        const avgNet = totalNet / entries.length;
-        const roi = totalBuyin > 0 ? (totalNet / totalBuyin * 100).toFixed(1) : 0;
-
-        // Last 8 sessions bar chart
-        const last8 = withDates.slice(-8);
-        const maxAbs = Math.max(...last8.map(x => Math.abs(x.entry.net_pl || 0)), 1);
-        const barW = 32, barPad = 6, chartH = 80, mid = chartH / 2;
-        const totalW = last8.length * (barW + barPad);
-        let sparkSvg = `<svg viewBox="0 0 ${totalW + 12} ${chartH + 16}" style="width: 100%; max-width: 360px; height: auto;">`;
-        sparkSvg += `<line x1="6" y1="${mid}" x2="${totalW + 6}" y2="${mid}" stroke="#55555544" stroke-width="1"/>`;
-        last8.forEach((x, i) => {
-          const net = x.entry.net_pl || 0;
-          const h = Math.abs(net) / maxAbs * (mid - 4);
-          const isPos = net >= 0;
-          const y = isPos ? mid - h : mid;
-          const color = isPos ? '#00c853' : '#ff1744';
-          sparkSvg += `<rect x="${i * (barW + barPad) + 6}" y="${y}" width="${barW}" height="${h}" rx="2" fill="${color}" opacity="0.85"/>`;
-        });
-        sparkSvg += `</svg>`;
-
-        const isPositive = totalNet >= 0;
-        const color = isPositive ? 'var(--accent-success)' : 'var(--accent-danger)';
-
-        target.innerHTML = `
-          <div style="background: linear-gradient(135deg, #1a1408, #0f0c06); border: 1px solid rgba(232,213,163,0.25); border-radius: 14px; padding: 18px; margin-bottom: 14px;">
-            <div style="font-size: 11px; color: #9a8b6e; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 4px;">All-Time P/L</div>
-            <div style="font-size: 32px; font-weight: 800; color: ${color}; margin-bottom: 10px;">
-              ${isPositive ? '+' : '-'}$${Math.abs(totalNet).toLocaleString()}
-            </div>
-            <div style="display: flex; gap: 8px; flex-wrap: wrap; font-size: 11px;">
-              <span style="padding: 4px 10px; border-radius: 12px; background: rgba(232,213,163,0.08); color: #c4b48a;">${entries.length} games</span>
-              <span style="padding: 4px 10px; border-radius: 12px; background: rgba(232,213,163,0.08); color: ${Number(winRate) >= 50 ? 'var(--accent-success)' : 'var(--accent-danger)'};">${winRate}% win rate</span>
-              <span style="padding: 4px 10px; border-radius: 12px; background: rgba(232,213,163,0.08); color: #c4b48a;">ROI ${roi}%</span>
-            </div>
-          </div>
-
-          <div style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 12px; padding: 14px; margin-bottom: 14px;">
-            <div style="font-size: 13px; font-weight: 700; margin-bottom: 8px;">Last ${last8.length} Sessions</div>
-            <div style="display: flex; justify-content: center;">${sparkSvg}</div>
-          </div>
-
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px;">
-            <div style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 10px; padding: 12px;">
-              <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 4px;">BEST SESSION</div>
-              <div style="font-size: 18px; font-weight: 700; color: var(--accent-success);">+$${best.toLocaleString()}</div>
-            </div>
-            <div style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 10px; padding: 12px;">
-              <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 4px;">WORST SESSION</div>
-              <div style="font-size: 18px; font-weight: 700; color: var(--accent-danger);">${worst >= 0 ? '+' : '-'}$${Math.abs(worst).toLocaleString()}</div>
-            </div>
-            <div style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 10px; padding: 12px;">
-              <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 4px;">AVG PER GAME</div>
-              <div style="font-size: 18px; font-weight: 700; color: ${avgNet >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)'};">${avgNet >= 0 ? '+' : '-'}$${Math.abs(Math.round(avgNet)).toLocaleString()}</div>
-            </div>
-            <div style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 10px; padding: 12px;">
-              <div style="font-size: 10px; color: var(--text-secondary); margin-bottom: 4px;">TOTAL BUY-IN</div>
-              <div style="font-size: 18px; font-weight: 700;">$${totalBuyin.toLocaleString()}</div>
-            </div>
-          </div>
-
-          <button class="btn btn-primary btn-block" onclick="app.showPlayerDetail('${playerId}')" style="margin-bottom: 8px;">
-            📊 View Full Stats & Chemistry →
-          </button>
-        `;
       },
 
       async showPlayerDetail(playerId, targetElId) {
@@ -6619,25 +6617,6 @@
         this.renderCarriesScreen();
       },
 
-      showMarkClearedModal(carryId) {
-        // Show Splitwise-style clearing options
-        app.closeModal();
-        const modal = document.getElementById('modal');
-        document.getElementById('modalTitle').textContent = 'Clear — How?';
-        document.getElementById('modalBody').innerHTML = `
-          <div style="display: flex; flex-direction: column; gap: 10px;">
-            <button class="btn btn-success" onclick="app.closeModal(); app.clearCarry('${carryId}', 'dealer_stash')" style="padding: 14px; font-size: 15px;">🃏 Dealer Stash</button>
-            <button class="btn btn-primary" onclick="app.closeModal(); app.clearCarry('${carryId}', 'derrick_float')" style="padding: 14px; font-size: 15px;">🏦 Derrick's Float</button>
-            <button class="btn btn-secondary" onclick="app.closeModal(); app.clearCarry('${carryId}', 'player')" style="padding: 14px; font-size: 15px;">👤 Another Player</button>
-            <button class="btn btn-primary" onclick="app.closeModal(); app.clearCarry('${carryId}', 'usdt')" style="padding: 14px; font-size: 15px; background: #f7931a; border-color: #f7931a;">🔶 USDT</button>
-          </div>
-        `;
-        document.getElementById('modalFooter').innerHTML = `
-          <button class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
-        `;
-        modal.classList.add('show');
-      },
-
       // ── Google Sheets Sync ──────────────────────────────────────────
 
       // Hardcoded defaults — no setup needed for Sarah's deployment
@@ -6690,10 +6669,21 @@
       },
 
       // ── Auto-sync: fires on every write, updates the session's sheet tab ──────
+      // Single-flight guard: rapid mutations (rebuy → cashout → endSession) used to
+      // launch overlapping POSTs that could clobber each other. Now: at most one
+      // request in flight; if more calls come in, we coalesce them into a single
+      // trailing sync with the latest state.
       autoSync() {
-        // Fire-and-forget — never blocks the UI
         if (!this.currentSession) return;
-        this._doAutoSync().catch(() => this._setSyncBadge('error'));
+        if (this._autoSyncInFlight) { this._autoSyncPending = true; return; }
+        this._autoSyncInFlight = true;
+        this._autoSyncPending = false;
+        this._doAutoSync()
+          .catch(() => this._setSyncBadge('error'))
+          .finally(() => {
+            this._autoSyncInFlight = false;
+            if (this._autoSyncPending) { this._autoSyncPending = false; this.autoSync(); }
+          });
       },
 
       async _doAutoSync() {
@@ -7336,14 +7326,58 @@
         if (typeof this.autoSync === 'function') this.autoSync();
       },
 
+      // Modal-based replacement for native prompt() — keeps the iOS PWA feel and gives
+      // proper inputmode/maxlength control (the password+numeric keyboard for PINs, etc).
+      // onOk receives the trimmed string. validator returns an error string (or null).
+      _modalPrompt({ title, label = '', defaultValue = '', placeholder = '', inputType = 'text', maxLength = null, inputMode = null, letterSpacing = null, validator = null, okLabel = 'OK', onOk, onCancel = null }) {
+        const modal = document.getElementById('modal');
+        document.getElementById('modalTitle').textContent = title;
+        const lblHtml = label ? `<div style="font-size:13px; color:var(--text-secondary); margin-bottom:8px;">${this._esc(label)}</div>` : '';
+        const lsStyle = letterSpacing ? `letter-spacing:${letterSpacing}; text-align:center;` : '';
+        document.getElementById('modalBody').innerHTML = `
+          ${lblHtml}
+          <input type="${inputType}" id="_promptInput" class="form-input" autocomplete="off"
+            placeholder="${this._esc(placeholder)}" value="${this._esc(defaultValue)}"
+            ${maxLength ? `maxlength="${maxLength}"` : ''}
+            ${inputMode ? `inputmode="${inputMode}"` : ''}
+            style="font-size:18px; ${lsStyle}">
+          <div id="_promptError" style="font-size:12px; color:var(--accent-danger); margin-top:6px; min-height:14px;"></div>
+        `;
+        const cancel = () => { this.closeModal(); if (onCancel) onCancel(); };
+        const submit = async () => {
+          const inp = document.getElementById('_promptInput');
+          const errEl = document.getElementById('_promptError');
+          const value = (inp?.value || '').trim();
+          if (validator) {
+            const err = await Promise.resolve(validator(value));
+            if (err) { if (errEl) errEl.textContent = err; return; }
+          }
+          this.closeModal();
+          try { await onOk(value); } catch(e) { console.error(e); }
+        };
+        document.getElementById('modalFooter').innerHTML = `
+          <button class="btn btn-secondary" id="_promptCancel">Cancel</button>
+          <button class="btn btn-primary" id="_promptOk">${this._esc(okLabel)}</button>
+        `;
+        document.getElementById('_promptCancel').onclick = cancel;
+        document.getElementById('_promptOk').onclick = submit;
+        const inp = document.getElementById('_promptInput');
+        if (inp) inp.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); submit(); } };
+        modal.classList.add('show');
+        setTimeout(() => {
+          const i = document.getElementById('_promptInput');
+          if (i) { i.focus(); if (defaultValue) i.select(); }
+        }, 60);
+      },
+
       async showAdminPlayerList() {
-        if (!this.isOwner()) { this.showToast('Admin only'); return; }
+        if (!this.isDealer()) { this.showToast('Dealer/admin only'); return; }
         const players = (await db.getAll('players')).filter(p => !p.deleted_at).sort((a,b) => a.name.localeCompare(b.name));
         const modal = document.getElementById('modal');
         document.getElementById('modalTitle').textContent = 'Player Profiles';
         document.getElementById('modalBody').innerHTML = `
           <button class="btn btn-primary btn-block" style="margin-bottom:12px;" onclick="app.adminAddPlayer()">+ Add New Player</button>
-          <div style="max-height:58vh;overflow-y:auto;">
+          <div style="max-height:58dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;">
             ${players.map(p => {
               const roleIcon = p.role === 'bank' ? '🏦' : p.role === 'dealer' ? '🃏' : '';
               const restricted = !!p.restricted_view;
@@ -7373,29 +7407,38 @@
       },
 
       async adminAddPlayer() {
-        if (!this.isOwner()) return;
-        const name = prompt('New player name:');
-        if (!name) return;
-        const trimmed = name.trim();
-        if (!trimmed) { this.showToast('Name cannot be empty'); return; }
-        const existing = (await db.getAll('players')).find(p => !p.deleted_at && p.name.toLowerCase() === trimmed.toLowerCase());
-        if (existing) { this.showToast('Name already exists'); return; }
-        await db.put('players', {
-          id: crypto.randomUUID(),
-          name: trimmed,
-          role: 'player',
-          preferred_payout: 'either',
-          restricted_view: false,
-          updated_at: new Date().toISOString(),
-          deleted_at: null,
+        if (!this.isDealer()) return;
+        this._modalPrompt({
+          title: 'Add New Player',
+          label: 'Name',
+          placeholder: 'e.g. Alex',
+          okLabel: 'Add',
+          validator: async (name) => {
+            if (!name) return 'Name cannot be empty';
+            const all = await db.getAll('players');
+            if (all.find(p => !p.deleted_at && p.name.toLowerCase() === name.toLowerCase())) return 'Name already exists';
+            return null;
+          },
+          onOk: async (name) => {
+            await db.put('players', {
+              id: crypto.randomUUID(),
+              name,
+              role: 'player',
+              preferred_payout: 'either',
+              restricted_view: false,
+              updated_at: new Date().toISOString(),
+              deleted_at: null,
+            });
+            this.showToast(`Added ${name}`);
+            this.showAdminPlayerList();
+            if (typeof this.autoSync === 'function') this.autoSync();
+          },
+          onCancel: () => this.showAdminPlayerList(),
         });
-        this.showToast(`Added ${trimmed}`);
-        this.showAdminPlayerList();
-        if (typeof this.autoSync === 'function') this.autoSync();
       },
 
       async adminDeletePlayer(playerId) {
-        if (!this.isOwner()) return;
+        if (!this.isDealer()) return;
         const player = await db.get('players', playerId);
         if (!player) return;
         if (!confirm(`Delete "${player.name}"? This is a soft-delete and can be recovered.`)) return;
@@ -7406,7 +7449,7 @@
       },
 
       async adminToggleRestrictedView(playerId) {
-        if (!this.isOwner()) return;
+        if (!this.isDealer()) return;
         const player = await db.get('players', playerId);
         if (!player) return;
         player.restricted_view = !player.restricted_view;
@@ -7418,37 +7461,62 @@
       },
 
       async adminRenamePlayer(playerId) {
-        if (!this.isOwner()) return;
+        if (!this.isDealer()) return;
         const player = await db.get('players', playerId);
         if (!player) return;
-        const newName = prompt(`Rename "${player.name}" to:`, player.name);
-        if (newName === null) return;
-        const trimmed = newName.trim();
-        if (!trimmed) { this.showToast('Name cannot be empty'); return; }
-        player.name = trimmed;
-        player.updated_at = new Date().toISOString();
-        await db.put('players', player);
-        this.showToast('Renamed');
-        this.showAdminPlayerList();
-        if (typeof this.autoSync === 'function') this.autoSync();
+        this._modalPrompt({
+          title: `Rename ${player.name}`,
+          label: 'New name',
+          defaultValue: player.name,
+          okLabel: 'Save',
+          validator: async (name) => {
+            if (!name) return 'Name cannot be empty';
+            if (name === player.name) return null;
+            const all = await db.getAll('players');
+            if (all.find(p => p.id !== playerId && !p.deleted_at && p.name.toLowerCase() === name.toLowerCase())) return 'Another player has this name';
+            return null;
+          },
+          onOk: async (name) => {
+            if (name === player.name) { this.showAdminPlayerList(); return; }
+            player.name = name;
+            player.updated_at = new Date().toISOString();
+            await db.put('players', player);
+            this.showToast('Renamed');
+            this.showAdminPlayerList();
+            if (typeof this.autoSync === 'function') this.autoSync();
+          },
+          onCancel: () => this.showAdminPlayerList(),
+        });
       },
 
       async adminResetPlayerPin(playerId) {
-        if (!this.isOwner()) return;
+        if (!this.isDealer()) return;
         const player = await db.get('players', playerId);
         if (!player) return;
-        const newPin = prompt(`Set new PIN for "${player.name}" (4–6 digits, blank to clear):`, '');
-        if (newPin === null) return;
-        const trimmed = newPin.trim();
-        if (trimmed && (trimmed.length < 4 || trimmed.length > 6 || !/^\d+$/.test(trimmed))) {
-          this.showToast('PIN must be 4–6 digits'); return;
-        }
-        player.personal_pin = trimmed || null;
-        player.updated_at = new Date().toISOString();
-        await db.put('players', player);
-        this.showToast(trimmed ? 'PIN reset' : 'PIN cleared');
-        this.showAdminPlayerList();
-        if (typeof this.autoSync === 'function') this.autoSync();
+        this._modalPrompt({
+          title: `PIN for ${player.name}`,
+          label: 'Set 4–6 digit PIN, or leave blank to clear',
+          placeholder: 'PIN',
+          inputType: 'password',
+          inputMode: 'numeric',
+          maxLength: 6,
+          letterSpacing: '6px',
+          okLabel: 'Save',
+          validator: (pin) => {
+            if (!pin) return null;
+            if (!/^\d{4,6}$/.test(pin)) return 'PIN must be 4–6 digits';
+            return null;
+          },
+          onOk: async (pin) => {
+            player.personal_pin = pin || null;
+            player.updated_at = new Date().toISOString();
+            await db.put('players', player);
+            this.showToast(pin ? 'PIN reset' : 'PIN cleared');
+            this.showAdminPlayerList();
+            if (typeof this.autoSync === 'function') this.autoSync();
+          },
+          onCancel: () => this.showAdminPlayerList(),
+        });
       },
 
       async showDeletedCarries() {
@@ -7462,7 +7530,7 @@
         } else {
           carries.sort((a, b) => new Date(b.deleted_at) - new Date(a.deleted_at));
           document.getElementById('modalBody').innerHTML = `
-            <div style="max-height:60vh;overflow-y:auto;">
+            <div style="max-height:60dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;">
               ${carries.map(c => {
                 const p = players.find(x => x.id === c.player_id);
                 const amt = `${c.amount_sgd > 0 ? '+' : ''}$${Math.abs(c.amount_sgd).toLocaleString()}`;
@@ -7858,6 +7926,15 @@
       console.error('Init error:', err);
       document.getElementById('pinLockScreen').innerHTML = `<div style="color: red; padding: 20px; text-align: center;">Error: ${err.message}</div>`;
     });
+
+    // ── Service Worker (offline support) ─────────────────────────────────
+    // Only registers over HTTPS or localhost (browser security).
+    // First load fills the cache; subsequent loads work offline.
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW registration failed:', err));
+      });
+    }
   </script>
 </body>
 </html>
