@@ -3522,20 +3522,26 @@
             if (activeEntries.length > 0) {
               html += `<div style="font-size: 11px; color: var(--text-secondary); padding: 8px 4px 2px; font-weight:600; letter-spacing:0.5px; text-transform:uppercase;">Cashed Out</div>`;
             }
+            const methodIcons = { pot: '🃏', cash: '💵', other_players: '👥', mixed: '⚖️' };
             for (const entry of finishedEntries) {
               const player = playerMap[entry.player_id];
               const totalBuyin = (entry.buy_ins || []).reduce((sum, b) => sum + b.amount, 0);
               const netPl = entry.cash_out - totalBuyin;
               const roleBadge = player?.role === 'bank' ? ' 🏦' : '';
+              const methodIcon = entry.settlement_method ? (methodIcons[entry.settlement_method] || '·') : '';
+              const paid = entry.paid_amount ?? entry.cash_out;
+              const balance = entry.cash_out - paid;
+              const balanceHint = balance !== 0 ? ` · Bal $${Math.abs(balance).toLocaleString()}` : '';
+              const editable = isActive && this.isDealer();
               html += `
-                <div class="player-card cashed-out">
+                <div class="player-card cashed-out" ${editable ? `onclick="app.showCashOutModal('${entry.id}')" style="cursor:pointer;"` : ''}>
                   <div style="flex: 1; min-width: 0;">
                     <div class="player-name">${player?.name || '?'}${roleBadge}</div>
-                    <div style="font-size: 12px; color: var(--text-secondary);">Out: $${entry.cash_out.toLocaleString()}</div>
+                    <div style="font-size: 12px; color: var(--text-secondary);">${methodIcon ? methodIcon + ' ' : ''}Out: $${entry.cash_out.toLocaleString()}${balanceHint}</div>
                   </div>
                   <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
                     <span style="font-size: 14px; font-weight: 800; color: ${netPl >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)'};">${netPl >= 0 ? '+' : ''}$${netPl.toLocaleString()}</span>
-                    ${isActive ? `<button onclick="app.undoCashOut('${entry.id}')" style="font-size: 11px; padding: 4px 8px; border-radius: 6px; background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-secondary); cursor: pointer; touch-action: manipulation;">↩</button>` : ''}
+                    ${isActive ? `<button onclick="event.stopPropagation(); app.undoCashOut('${entry.id}')" style="font-size: 11px; padding: 4px 8px; border-radius: 6px; background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-secondary); cursor: pointer; touch-action: manipulation;">↩</button>` : ''}
                   </div>
                 </div>
               `;
@@ -3611,6 +3617,37 @@
                 style="padding:3px 9px; border-radius:6px; background:var(--accent-danger)18; color:var(--accent-danger); border:1px solid var(--accent-danger)44; font-size:13px; line-height:1; cursor:pointer; touch-action:manipulation;" aria-label="Remove buy-in">✕</button>` : ''}
             </div>
           `).join('');
+          // Settlement summary block (only shown once cashed out)
+          let settlementHtml = '';
+          if (isCashedOut) {
+            const methodLabels = { pot: '🃏 Pot', cash: '💵 Cash', other_players: '👥 Other Players', mixed: '⚖️ Mixed' };
+            const methodLabel = methodLabels[entry.settlement_method] || (entry.settlement_method ? entry.settlement_method : '—');
+            const paid = entry.paid_amount ?? entry.cash_out;
+            const balance = entry.cash_out - paid;
+            settlementHtml = `
+              <div style="display:flex; justify-content:space-between; margin-top:4px;">
+                <span style="font-size:12px; font-weight:700;">Cash out</span>
+                <span style="font-size:13px; font-weight:700; color:var(--accent-success);">$${entry.cash_out.toLocaleString()}</span>
+              </div>
+              <div style="display:flex; justify-content:space-between; margin-top:2px;">
+                <span style="font-size:11px; color:var(--text-secondary);">Method</span>
+                <span style="font-size:12px; font-weight:600;">${methodLabel}</span>
+              </div>
+              ${balance !== 0 ? `
+                <div style="display:flex; justify-content:space-between; margin-top:2px;">
+                  <span style="font-size:11px; color:var(--text-secondary);">Paid</span>
+                  <span style="font-size:12px; font-weight:600;">$${paid.toLocaleString()}</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; margin-top:2px;">
+                  <span style="font-size:11px; color:var(--accent-warning);">Balance ${balance > 0 ? 'owed to player' : 'overpaid'}</span>
+                  <span style="font-size:12px; font-weight:700; color:var(--accent-warning);">$${Math.abs(balance).toLocaleString()}</span>
+                </div>` : ''}
+              ${entry.notes ? `
+                <div style="margin-top:6px; padding-top:6px; border-top:1px dashed var(--border-color); font-size:11px; color:var(--text-secondary); white-space:pre-wrap;">📝 ${this._esc(entry.notes)}</div>
+              ` : ''}
+            `;
+          }
+
           historyHtml = `
             <div style="margin-bottom:12px; padding:10px 12px; background:var(--bg-tertiary); border-radius:10px;">
               <div style="font-size:10px; font-weight:700; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">
@@ -3621,10 +3658,7 @@
                 <span style="font-size:12px; font-weight:700;">Total in</span>
                 <span style="font-size:13px; font-weight:700; color:var(--accent-danger);">$${totalBuyin.toLocaleString()}</span>
               </div>
-              ${isCashedOut ? `<div style="display:flex; justify-content:space-between; margin-top:4px;">
-                <span style="font-size:12px; font-weight:700;">Cash out</span>
-                <span style="font-size:13px; font-weight:700; color:var(--accent-success);">$${entry.cash_out.toLocaleString()}</span>
-              </div>` : ''}
+              ${settlementHtml}
             </div>
           `;
         }
@@ -3643,7 +3677,8 @@
           <button class="btn btn-primary btn-block" onclick="app.showCashOutModal('${entry.id}')">💰 Cash Out</button>
           <button class="btn btn-danger btn-block" onclick="app.confirmRemovePlayer('${entry.id}', '${session.id}')">Remove Player</button>
           ` : `
-          <button class="btn btn-secondary btn-block" onclick="app.undoCashOut('${entry.id}')">↩ Undo Cash Out</button>
+          <button class="btn btn-primary btn-block" onclick="app.showCashOutModal('${entry.id}')">✏️ Edit Cashout / Settlement</button>
+          <button class="btn btn-secondary btn-block" onclick="app.undoCashOut('${entry.id}')">↩ Cancel Cashout</button>
           `}
         `;
         document.getElementById('actionSheet').classList.add('show');
@@ -3698,29 +3733,205 @@
         });
       },
 
-      showCashOutModal(entryId) {
-        this.showNumericModal('Cash Out', async (amount) => {
-          if (amount >= 0) {
-            const entry = await db.get('sessionEntries', entryId);
-            // Store snapshot for undo
-            this.lastCashout = { entryId, prevCashOut: entry.cash_out, prevNetPl: entry.net_pl };
-            entry.cash_out = amount;
-            entry.net_pl = amount - (entry.buy_ins || []).reduce((s, b) => s + b.amount, 0);
-            await db.put('sessionEntries', entry);
-            this.closeActionSheet();
-            this.renderSessionScreen();
-            this.showUndoToast('Cash out recorded');
-            this.autoSync();
-          }
+      // Rich cashout modal: amount + settlement method + paid + notes.
+      // Re-opens with existing values when editing a cashout.
+      async showCashOutModal(entryId) {
+        const entry = await db.get('sessionEntries', entryId);
+        if (!entry) return;
+        const player = await app.getPlayer(entry.player_id);
+        const totalBuyin = (entry.buy_ins || []).reduce((s, b) => s + b.amount, 0);
+        const isEditing = entry.cash_out !== null && entry.cash_out !== undefined;
+
+        const initAmount = isEditing ? entry.cash_out : 0;
+        const initPaid   = entry.paid_amount ?? initAmount;
+        const initMethod = entry.settlement_method || '';
+        const initNotes  = entry.notes || '';
+
+        this.closeActionSheet();
+        const modal = document.getElementById('modal');
+        document.getElementById('modalTitle').textContent =
+          (isEditing ? 'Edit Cashout — ' : 'Cash Out — ') + (player?.name || '?');
+
+        const methodBtn = (key, label) => `
+          <button type="button" data-method="${key}" onclick="app._coPickMethod(this)"
+            style="padding:11px 8px; background:var(--bg-tertiary); border:1px solid var(--border-color); color:var(--text-primary);
+                   border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; touch-action:manipulation;">${label}</button>`;
+
+        document.getElementById('modalBody').innerHTML = `
+          <div style="margin-bottom:14px; padding:12px; background:var(--bg-tertiary); border-radius:10px; font-size:13px;">
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+              <span style="color:var(--text-secondary);">Buy-in</span>
+              <span style="font-weight:700;">$${totalBuyin.toLocaleString()}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between;">
+              <span style="color:var(--text-secondary);">Net P/L</span>
+              <span id="coNetPl" style="font-weight:700;">—</span>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Cashout amount</label>
+            <input type="text" inputmode="numeric" id="coAmount" placeholder="0"
+              value="${initAmount > 0 ? initAmount.toLocaleString() : ''}"
+              oninput="app._fmtCashoutAmount(this); app._updateCoNetPl(${totalBuyin}); app._updateCoBalance();"
+              onclick="this.select()"
+              class="form-input"
+              style="font-size:24px; text-align:center; font-weight:700;">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Settlement method</label>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+              ${methodBtn('pot', '🃏 Cleared with Pot')}
+              ${methodBtn('cash', '💵 Cleared with Cash')}
+              ${methodBtn('other_players', '👥 Other Players')}
+              ${methodBtn('mixed', '⚖️ Mixed / Multiple')}
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Paid now <span style="color:var(--text-secondary); font-weight:400; font-size:11px;">(defaults to full cashout)</span></label>
+            <input type="text" inputmode="numeric" id="coPaid" placeholder="$0"
+              value="${initPaid > 0 ? initPaid.toLocaleString() : ''}"
+              oninput="app._fmtCashoutAmount(this); app._updateCoBalance();"
+              onclick="this.select()"
+              class="form-input">
+            <div id="coBalance" style="font-size:12px; margin-top:6px; text-align:center; min-height:14px;"></div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">Notes (optional)</label>
+            <textarea id="coNotes" placeholder="e.g. paid $20k cash + $10k via Sam, balance to clear"
+              style="width:100%; min-height:60px; padding:10px; background:var(--bg-tertiary); color:var(--text-primary);
+                     border:1px solid var(--border-color); border-radius:8px; font-size:14px; resize:vertical; font-family:inherit;">${this._esc(initNotes)}</textarea>
+          </div>
+        `;
+
+        document.getElementById('modalFooter').innerHTML = `
+          ${isEditing ? `<button class="btn btn-danger" onclick="app.cancelCashout('${entryId}')" style="flex:0 0 auto; padding:11px 12px;">Cancel CO</button>` : ''}
+          <button class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="app.commitCashout('${entryId}', ${totalBuyin})">${isEditing ? 'Save' : 'Cash Out'}</button>
+        `;
+
+        modal.classList.add('show');
+        // Pre-select method if editing
+        if (initMethod) {
+          const btn = document.querySelector(`#modalBody [data-method="${initMethod}"]`);
+          if (btn) this._coPickMethod(btn);
+        }
+        // Initial computed displays
+        this._updateCoNetPl(totalBuyin);
+        this._updateCoBalance();
+        // Focus amount input on first open (skip on edit so user sees existing values first)
+        if (!isEditing) setTimeout(() => document.getElementById('coAmount')?.focus(), 60);
+      },
+
+      _fmtCashoutAmount(input) {
+        const raw = (input.value || '').replace(/[^0-9]/g, '');
+        input.value = raw ? parseInt(raw).toLocaleString() : '';
+      },
+
+      _coReadAmt(id) {
+        const v = document.getElementById(id)?.value || '';
+        const n = parseInt(v.replace(/[^0-9]/g, ''));
+        return isNaN(n) ? 0 : n;
+      },
+
+      _updateCoNetPl(buyin) {
+        const amount = this._coReadAmt('coAmount');
+        const pl = amount - buyin;
+        const el = document.getElementById('coNetPl');
+        if (!el) return;
+        if (amount === 0) { el.textContent = '—'; el.style.color = 'var(--text-secondary)'; return; }
+        el.textContent = `${pl >= 0 ? '+' : '-'}$${Math.abs(pl).toLocaleString()}`;
+        el.style.color = pl >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)';
+      },
+
+      _updateCoBalance() {
+        const amount = this._coReadAmt('coAmount');
+        const paid   = this._coReadAmt('coPaid');
+        const el = document.getElementById('coBalance');
+        if (!el) return;
+        if (paid === 0 && amount === 0) { el.textContent = ''; return; }
+        // If paid is blank/0, treat as full
+        const effectivePaid = paid === 0 ? amount : paid;
+        const bal = amount - effectivePaid;
+        if (bal === 0) {
+          el.textContent = '✓ Settled in full';
+          el.style.color = 'var(--accent-success)';
+        } else if (bal > 0) {
+          el.textContent = `Balance owed to player: $${bal.toLocaleString()}`;
+          el.style.color = 'var(--accent-warning)';
+        } else {
+          el.textContent = `Overpaid by $${Math.abs(bal).toLocaleString()}`;
+          el.style.color = 'var(--accent-danger)';
+        }
+      },
+
+      _coPickMethod(btn) {
+        document.querySelectorAll('#modalBody [data-method]').forEach(b => {
+          b.style.background = 'var(--bg-tertiary)';
+          b.style.borderColor = 'var(--border-color)';
+          b.style.color = 'var(--text-primary)';
+          delete b.dataset.selected;
         });
+        btn.style.background = 'rgba(78,204,163,0.18)';
+        btn.style.borderColor = 'rgba(78,204,163,0.55)';
+        btn.style.color = 'var(--accent-success)';
+        btn.dataset.selected = '1';
+      },
+
+      async commitCashout(entryId, buyin) {
+        const amount = this._coReadAmt('coAmount');
+        if (amount < 0) return;
+        const paid    = this._coReadAmt('coPaid');
+        const notes   = (document.getElementById('coNotes')?.value || '').trim();
+        const sel     = document.querySelector('#modalBody [data-method][data-selected]');
+        const method  = sel?.dataset.method || null;
+
+        const entry = await db.get('sessionEntries', entryId);
+        if (!entry) return;
+
+        // Snapshot for undo (legacy single-field undo + full snapshot)
+        this.lastCashout = {
+          entryId,
+          prevCashOut: entry.cash_out,
+          prevNetPl: entry.net_pl,
+          prevSettlement: entry.settlement_method,
+          prevPaid: entry.paid_amount,
+          prevNotes: entry.notes,
+        };
+
+        entry.cash_out          = amount;
+        entry.net_pl            = amount - buyin;
+        entry.settlement_method = method;
+        entry.paid_amount       = paid > 0 ? paid : amount; // blank means paid in full
+        entry.notes             = notes || null;
+        entry.updated_at        = new Date().toISOString();
+        await db.put('sessionEntries', entry);
+
+        this.closeModal();
+        this.renderSessionScreen();
+        this.showUndoToast('Cashout saved');
+        this.autoSync();
+      },
+
+      // Cancel = wipe the cashout and put the player back to "in play"
+      async cancelCashout(entryId) {
+        if (!confirm('Cancel this cashout? Player goes back to "in play".')) return;
+        this.closeModal();
+        await this.undoCashOut(entryId);
       },
 
       async undoCashOut(entryId) {
         const entry = await db.get('sessionEntries', entryId);
         if (!entry) return;
-        entry.cash_out = null;
-        entry.net_pl = 0;
+        entry.cash_out          = null;
+        entry.net_pl            = 0;
         entry.settlement_method = null;
+        entry.paid_amount       = null;
+        entry.notes             = null;
+        entry.updated_at        = new Date().toISOString();
         await db.put('sessionEntries', entry);
         this.lastCashout = null;
         this.closeActionSheet();
