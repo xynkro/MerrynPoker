@@ -3976,10 +3976,26 @@
       },
 
       showCustomRebuyModal(entryId) {
-        this.showNumericModal('Custom Rebuy', async (amount) => {
-          if (amount > 0) {
-            await this.addBuyin(entryId, amount);
-          }
+        // Uses _modalPrompt with iOS numeric keyboard. Replaces the old keypad-only
+        // modal that had a closure/global-state bug where amount-not-registering
+        // was silent (Confirm with $0 just dismissed without feedback).
+        this._modalPrompt({
+          title: 'Custom rebuy',
+          label: 'Amount (SGD)',
+          placeholder: 'e.g. 100000',
+          inputType: 'text',
+          inputMode: 'numeric',
+          okLabel: 'Add',
+          validator: (val) => {
+            const n = parseInt((val || '').replace(/[^0-9]/g, ''), 10);
+            if (!n || n <= 0) return 'Enter an amount greater than 0';
+            if (n > 10_000_000) return 'Amount looks too large — typo?';
+            return null;
+          },
+          onOk: async (val) => {
+            const amount = parseInt((val || '').replace(/[^0-9]/g, ''), 10);
+            if (amount > 0) await this.addBuyin(entryId, amount);
+          },
         });
       },
 
