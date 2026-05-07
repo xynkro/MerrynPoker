@@ -3761,20 +3761,20 @@
                     placeholder="Cash out"
                     onclick="this.select()"
                     oninput="app._fmtCashoutInput(this)"
-                    style="width: 96px; padding: 7px 8px; background: var(--bg-tertiary); color: var(--text-primary);
+                    style="width: 92px; padding: 7px 8px; background: var(--bg-tertiary); color: var(--text-primary);
                            border: 1px solid var(--border-color); border-radius: 8px; font-size: 16px;
                            text-align: center; font-weight: 700; touch-action: manipulation;">
-                  <button onclick="app.cashOutFromTab('${entry.id}')"
-                    style="padding: 8px 10px; border-radius: 8px; background: var(--accent-success)22;
+                  <button onclick="app.cashOutFromTab('${entry.id}')" title="Cash out (single source)"
+                    style="padding: 8px 9px; border-radius: 8px; background: var(--accent-success)22;
                            border: 1px solid var(--accent-success)55; color: var(--accent-success);
                            font-size: 15px; font-weight: 700; cursor: pointer; touch-action: manipulation; white-space: nowrap;">
                     💰
                   </button>
-                  <button onclick="app.showTransferFromPlayer('${entry.player_id}')"
-                    style="padding: 8px 10px; border-radius: 8px; background: var(--accent-warning)22;
-                           border: 1px solid var(--accent-warning)44; color: var(--accent-warning);
+                  <button onclick="app.showCashOutAllocator('${entry.id}')" title="Allocate from multiple sources"
+                    style="padding: 8px 9px; border-radius: 8px; background: var(--accent-primary)22;
+                           border: 1px solid var(--accent-primary)55; color: var(--accent-primary);
                            font-size: 15px; cursor: pointer; touch-action: manipulation; white-space: nowrap;">
-                    💸
+                    🤝
                   </button>
                 </div>
                 ` : ''}
@@ -4386,6 +4386,398 @@
         await db.put('sessionEntries', entry);
         this.renderSessionScreen();
         this.showUndoToast('Cash out recorded');
+        this.autoSync();
+      },
+
+      // Settlement Allocator — winner-side, multi-source split.
+      // Sources: losers at the table, Derrick float SGD, Derrick float USDT,
+      // existing open carries (someone owes Derrick), park remainder as new carry.
+      async showCashOutAllocator(entryId) {
+        const entry = await db.get('sessionEntries', entryId);
+        if (!entry) return;
+        const player = await app.getPlayer(entry.player_id);
+        const totalBuyin = (entry.buy_ins || []).reduce((s, b) => s + b.amount, 0);
+        const session = this.currentSession;
+        if (!session) return;
+
+        // Pre-fill cashout from input on the Cash Out tab if the dealer typed something.
+        const tabInput = document.getElementById(`co_${entryId}`);
+        const tabAmount = tabInput ? parseInt((tabInput.value || '').replace(/[^0-9]/g, ''), 10) || 0 : 0;
+        const initCashout = entry.cash_out ?? (tabAmount || totalBuyin);
+
+        // Gather context
+        const allEntries = await db.getAllByIndex('sessionEntries', 'session_id', session.id);
+        const players = await db.getAll('players');
+        const playerMap = Object.fromEntries(players.map(p => [p.id, p]));
+        const allCarries = (await db.getAll('carryBalances')).filter(c => c.status === 'open' && !c.deleted_at);
+        const tablePmts = (await db.getAll('tablePayments')).filter(tp => tp.session_id === session.id);
+        const allFloatTx = await db.getAll('floatTransactions');
+
+        // Compute losers at the table — players whose net P/L is negative or who have
+        // chips in the pot but haven't cashed out yet. Subtract anything they already
+        // paid out via tablePayments to avoid double-counting.
+        const losers = [];
+        for (const e of allEntries) {
+          if (e.deleted_at || e.id === entryId) continue;
+          if (playerMap[e.player_id]?.role === 'dealer') continue;
+          const buyIn = (e.buy_ins || []).reduce((s, b) => s + b.amount, 0);
+          let loss;
+          if (e.cash_out !== null && e.cash_out !== undefined) {
+            loss = buyIn - e.cash_out;            // realised loss
+          } else {
+            loss = buyIn;                          // worst-case (haven't cashed out)
+          }
+          const alreadyPaid = tablePmts
+            .filter(tp => tp.from_player_id === e.player_id && tp.from_source === 'player')
+            .reduce((s, tp) => s + tp.amount, 0);
+          const unsettled = Math.max(0, loss - alreadyPaid);
+          if (unsettled > 0) {
+            losers.push({ playerId: e.player_id, name: playerMap[e.player_id]?.name || '?', unsettled });
+          }
+        }
+        losers.sort((a, b) => b.unsettled - a.unsettled);
+
+        // Open carries where someone owes Derrick — these can be "consumed" to pay this winner.
+        const consumableCarries = allCarries.filter(c => c.amount_sgd < 0 && c.player_id !== entry.player_id);
+
+        // Float balances + live rate
+        const floatCash = allFloatTx.reduce((s, tx) => s + (tx.amount_sgd || 0), 0);
+        const floatUsdt = allFloatTx.reduce((s, tx) => s + (tx.amount_usdt || 0), 0);
+        const liveRate = await this.fetchLiveRates().then(r => Number(r?.usdtSgd) || 1.27).catch(() => 1.27);
+
+        // Stash state for the live recompute helper
+        app._allocator = {
+          entryId,
+          totalBuyin,
+          rate: liveRate,
+          losers,
+          carries: consumableCarries.map(c => ({ id: c.id, name: playerMap[c.player_id]?.name || '?', amount: Math.abs(c.amount_sgd), original: c })),
+          floatCashAvail: Math.max(0, floatCash),
+          floatUsdtAvail: floatUsdt,
+        };
+
+        // Auto-suggest: fill losers in order until netPl is satisfied.
+        const initNetPl = Math.max(0, initCashout - totalBuyin);
+        const suggested = {};
+        let remaining = initNetPl;
+        for (const l of losers) {
+          if (remaining <= 0) break;
+          const take = Math.min(l.unsettled, remaining);
+          suggested['loser_' + l.playerId] = take;
+          remaining -= take;
+        }
+
+        const fmtNum = (n) => Math.round(n).toLocaleString();
+        const playerName = this._esc(player?.name || '?');
+
+        // Build modal
+        const modal = document.getElementById('modal');
+        document.getElementById('modalTitle').textContent = `Allocate Cashout — ${playerName}`;
+
+        const losersHtml = losers.map(l => `
+          <div data-src-row data-src-type="loser" data-src-id="${l.playerId}" data-cap="${l.unsettled}"
+               style="display:flex; align-items:center; gap:8px; padding:8px 4px; border-bottom:1px solid var(--border-color);">
+            <span style="flex:1; font-size:14px;">🪑 ${this._esc(l.name)}
+              <span style="font-size:11px; color:var(--text-secondary);">lost $${fmtNum(l.unsettled)}</span></span>
+            <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
+              value="${suggested['loser_' + l.playerId] ? fmtNum(suggested['loser_' + l.playerId]) : ''}"
+              oninput="app._allocFmt(this)"
+              onclick="this.select()"
+              style="width:96px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:15px; text-align:right;">
+          </div>`).join('');
+
+        const carriesHtml = consumableCarries.length === 0 ? '' : `
+          <div style="font-size:11px; color:var(--text-secondary); padding:8px 4px 4px; font-weight:700; letter-spacing:0.4px; text-transform:uppercase;">Use a carry someone owes Derrick</div>
+          ${consumableCarries.map(c => `
+            <div data-src-row data-src-type="carry" data-src-id="${c.id}" data-cap="${Math.abs(c.amount_sgd)}"
+                 style="display:flex; align-items:center; gap:8px; padding:8px 4px; border-bottom:1px solid var(--border-color);">
+              <span style="flex:1; font-size:14px;">📋 ${this._esc(playerMap[c.player_id]?.name || '?')} owes
+                <span style="font-size:11px; color:var(--text-secondary);">$${fmtNum(Math.abs(c.amount_sgd))} avail</span></span>
+              <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
+                oninput="app._allocFmt(this)" onclick="this.select()"
+                style="width:96px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:15px; text-align:right;">
+            </div>`).join('')}`;
+
+        document.getElementById('modalBody').innerHTML = `
+          <div style="margin-bottom:12px; padding:10px 12px; background:var(--bg-tertiary); border-radius:10px;">
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px; font-size:12px;">
+              <span style="color:var(--text-secondary);">Buy-in</span>
+              <span style="font-weight:700;">$${fmtNum(totalBuyin)}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+              <span style="color:var(--text-secondary); font-size:12px;">Cashout</span>
+              <input type="text" inputmode="numeric" id="allocCashout" placeholder="0"
+                value="${initCashout > 0 ? fmtNum(initCashout) : ''}"
+                oninput="app._allocFmt(this); app._allocRecompute();"
+                onclick="this.select()"
+                style="width:140px; padding:7px 10px; background:var(--bg-secondary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:8px; font-size:18px; text-align:right; font-weight:700;">
+            </div>
+            <div style="display:flex; justify-content:space-between; font-size:13px; padding-top:6px; border-top:1px solid var(--border-color);">
+              <span style="color:var(--text-secondary);">Net P/L</span>
+              <span id="allocNetPl" style="font-weight:800;">—</span>
+            </div>
+          </div>
+
+          <div style="font-size:12px; color:var(--text-secondary); margin-bottom:6px;">Pay <span id="allocNeed">$0</span> from:</div>
+          <div style="max-height:300px; overflow-y:auto; -webkit-overflow-scrolling:touch; border:1px solid var(--border-color); border-radius:10px; padding:4px 8px;">
+            ${losers.length > 0 ? `<div style="font-size:11px; color:var(--text-secondary); padding:6px 4px; font-weight:700; letter-spacing:0.4px; text-transform:uppercase;">Losers at table</div>${losersHtml}` : ''}
+            <div style="font-size:11px; color:var(--text-secondary); padding:8px 4px 4px; font-weight:700; letter-spacing:0.4px; text-transform:uppercase;">Derrick's float</div>
+            <div data-src-row data-src-type="float_sgd" data-cap="${Math.max(0, floatCash)}"
+                 style="display:flex; align-items:center; gap:8px; padding:8px 4px; border-bottom:1px solid var(--border-color);">
+              <span style="flex:1; font-size:14px;">🏦 Float SGD <span style="font-size:11px; color:var(--text-secondary);">$${fmtNum(floatCash)} avail</span></span>
+              <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
+                oninput="app._allocFmt(this)" onclick="this.select()"
+                style="width:96px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:15px; text-align:right;">
+            </div>
+            <div data-src-row data-src-type="float_usdt" data-cap="${Math.max(0, floatUsdt * liveRate)}"
+                 style="display:flex; align-items:center; gap:8px; padding:8px 4px; border-bottom:1px solid var(--border-color);">
+              <span style="flex:1; font-size:14px;">🔶 Float USDT @${liveRate.toFixed(4)} <span style="font-size:11px; color:var(--text-secondary);">${floatUsdt.toFixed(2)}T avail</span></span>
+              <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
+                oninput="app._allocFmt(this)" onclick="this.select()"
+                style="width:96px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:15px; text-align:right;">
+            </div>
+            ${carriesHtml}
+          </div>
+
+          <div style="margin-top:10px; padding:10px; background:var(--bg-tertiary); border-radius:10px;">
+            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+              <span style="font-size:13px; color:var(--text-secondary);">Allocated</span>
+              <span id="allocSum" style="font-weight:700;">$0</span>
+            </div>
+            <div id="allocStatus" style="text-align:center; font-weight:700; font-size:13px; min-height:18px;"></div>
+            <button id="allocParkBtn" type="button" onclick="app._allocParkRemainder()"
+              style="display:none; margin-top:6px; width:100%; padding:9px; background:var(--accent-warning)18; border:1px dashed var(--accent-warning)55; color:var(--accent-warning); border-radius:8px; font-size:13px; font-weight:700; cursor:pointer;">📋 Park remainder as a new carry</button>
+          </div>
+        `;
+
+        document.getElementById('modalFooter').innerHTML = `
+          <button class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+          <button class="btn btn-primary" id="allocConfirm" onclick="app._allocConfirm('${entryId}', ${totalBuyin})" disabled>Confirm</button>
+        `;
+        modal.classList.add('show');
+        this._allocRecompute();
+      },
+
+      _allocFmt(input) {
+        const raw = input.value.replace(/[^0-9]/g, '');
+        input.value = raw ? parseInt(raw).toLocaleString() : '';
+        this._allocRecompute();
+      },
+
+      _allocReadAmt(el) {
+        return parseInt(((el?.value || '').replace(/[^0-9]/g, '')), 10) || 0;
+      },
+
+      _allocRecompute() {
+        const cashout = this._allocReadAmt(document.getElementById('allocCashout'));
+        const buyin = this._allocator?.totalBuyin || 0;
+        const netPl = Math.max(0, cashout - buyin);
+
+        const netPlEl = document.getElementById('allocNetPl');
+        if (netPlEl) {
+          const real = cashout - buyin;
+          netPlEl.textContent = real >= 0 ? `+$${real.toLocaleString()}` : `-$${Math.abs(real).toLocaleString()}`;
+          netPlEl.style.color = real >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)';
+        }
+        document.getElementById('allocNeed').textContent = `$${netPl.toLocaleString()}`;
+
+        // Sum allocated
+        let allocated = 0;
+        document.querySelectorAll('[data-src-row]').forEach(row => {
+          const inp = row.querySelector('input.alloc-src');
+          allocated += this._allocReadAmt(inp);
+        });
+        document.getElementById('allocSum').textContent = `$${allocated.toLocaleString()}`;
+
+        const statusEl = document.getElementById('allocStatus');
+        const parkBtn = document.getElementById('allocParkBtn');
+        const confirmBtn = document.getElementById('allocConfirm');
+        const remaining = netPl - allocated;
+
+        if (netPl === 0) {
+          statusEl.textContent = cashout < buyin ? '⚠ This is a loss — use the simple cash-out instead' : '✓ No allocation needed';
+          statusEl.style.color = cashout < buyin ? 'var(--accent-danger)' : 'var(--accent-success)';
+          if (parkBtn) parkBtn.style.display = 'none';
+          if (confirmBtn) confirmBtn.disabled = cashout < buyin;
+        } else if (remaining > 0) {
+          statusEl.textContent = `Need $${remaining.toLocaleString()} more`;
+          statusEl.style.color = 'var(--accent-warning)';
+          if (parkBtn) parkBtn.style.display = '';
+          if (confirmBtn) confirmBtn.disabled = true;
+        } else if (remaining === 0) {
+          statusEl.textContent = '✓ Fully allocated';
+          statusEl.style.color = 'var(--accent-success)';
+          if (parkBtn) parkBtn.style.display = 'none';
+          if (confirmBtn) confirmBtn.disabled = false;
+        } else {
+          statusEl.textContent = `⚠ Over by $${Math.abs(remaining).toLocaleString()}`;
+          statusEl.style.color = 'var(--accent-danger)';
+          if (parkBtn) parkBtn.style.display = 'none';
+          if (confirmBtn) confirmBtn.disabled = true;
+        }
+      },
+
+      _allocParkRemainder() {
+        const cashout = this._allocReadAmt(document.getElementById('allocCashout'));
+        const buyin = this._allocator?.totalBuyin || 0;
+        const netPl = Math.max(0, cashout - buyin);
+        let allocated = 0;
+        document.querySelectorAll('[data-src-row]').forEach(row => {
+          allocated += this._allocReadAmt(row.querySelector('input.alloc-src'));
+        });
+        const remaining = netPl - allocated;
+        if (remaining <= 0) return;
+        // Mark a synthetic "park" allocation
+        if (!document.getElementById('allocParkRow')) {
+          const parkRow = document.createElement('div');
+          parkRow.id = 'allocParkRow';
+          parkRow.dataset.srcRow = '';
+          parkRow.dataset.srcType = 'park';
+          parkRow.dataset.cap = '999999999';
+          parkRow.style = 'display:flex; align-items:center; gap:8px; padding:8px 4px; border-bottom:1px solid var(--border-color);';
+          parkRow.innerHTML = `
+            <span style="flex:1; font-size:14px;">📋 Parked as carry <span style="font-size:11px; color:var(--text-secondary);">→ adds to Carries tab</span></span>
+            <input type="text" inputmode="numeric" class="alloc-src" value="${remaining.toLocaleString()}"
+              oninput="app._allocFmt(this)" onclick="this.select()"
+              style="width:96px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--accent-warning)55; border-radius:6px; font-size:15px; text-align:right; color:var(--accent-warning); font-weight:700;">`;
+          document.querySelector('[data-src-row][data-src-type="float_usdt"]').parentNode.appendChild(parkRow);
+        } else {
+          document.getElementById('allocParkRow').querySelector('input').value = remaining.toLocaleString();
+        }
+        this._allocRecompute();
+      },
+
+      async _allocConfirm(entryId, totalBuyin) {
+        const cashout = this._allocReadAmt(document.getElementById('allocCashout'));
+        if (cashout < 0) { this.showToast('Enter a valid cashout amount'); return; }
+
+        const session = this.currentSession;
+        const entry = await db.get('sessionEntries', entryId);
+        if (!entry || !session) return;
+        const now = new Date().toISOString();
+        const rate = this._allocator?.rate || 1.27;
+        const winnerId = entry.player_id;
+
+        // Snapshot for undo of cashout itself
+        this.lastCashout = { entryId, prevCashOut: entry.cash_out, prevNetPl: entry.net_pl, prevSettlement: entry.settlement_method, prevPaid: entry.paid_amount, prevNotes: entry.notes };
+
+        // Iterate source rows and apply
+        const rows = [...document.querySelectorAll('[data-src-row]')];
+        for (const row of rows) {
+          const amt = this._allocReadAmt(row.querySelector('input.alloc-src'));
+          if (amt <= 0) continue;
+          const type = row.dataset.srcType;
+          const id = row.dataset.srcId;
+
+          if (type === 'loser') {
+            // Record peer-to-peer payment from loser → winner
+            await db.put('tablePayments', {
+              id: crypto.randomUUID(),
+              session_id: session.id,
+              timestamp: now,
+              type: 'TABLE_PAYMENT',
+              from_source: 'player',
+              from_player_id: id,
+              to_player_id: winnerId,
+              amount: amt,
+              note: `Allocated from settlement of ${(this._allocator?.losers || []).find(l => l.playerId === id)?.name || '?'}`,
+              updated_at: now,
+              deleted_at: null,
+            });
+          } else if (type === 'float_sgd') {
+            await db.put('floatTransactions', {
+              id: crypto.randomUUID(),
+              session_id: session.id,
+              timestamp: now,
+              type: 'SETTLEMENT_CASH_OUT',
+              amount_sgd: -amt,
+              amount_usdt: 0,
+              rate_used: null,
+              player_id: winnerId,
+              note: `Float cash payout to winner (allocator)`,
+              updated_at: now,
+              deleted_at: null,
+            });
+          } else if (type === 'float_usdt') {
+            const usdt = amt / rate;
+            await db.put('floatTransactions', {
+              id: crypto.randomUUID(),
+              session_id: session.id,
+              timestamp: now,
+              type: 'USDT_PAYOUT',
+              amount_sgd: 0,
+              amount_usdt: -usdt,
+              rate_used: rate,
+              player_id: winnerId,
+              note: `USDT payout to winner: ${usdt.toFixed(2)}T @ ${rate.toFixed(4)} = $${amt.toLocaleString()}`,
+              updated_at: now,
+              deleted_at: null,
+            });
+          } else if (type === 'carry') {
+            // Option A: reduce existing carry, create new carry for winner.
+            const carry = await db.get('carryBalances', id);
+            if (!carry) continue;
+            const winnerPlayer = await app.getPlayer(winnerId);
+            const reduceBy = Math.min(amt, Math.abs(carry.amount_sgd));
+            // Reduce: amount_sgd is negative (debtor owes); add reduceBy → less negative (closer to 0)
+            const newAmount = carry.amount_sgd + reduceBy;
+            if (Math.abs(newAmount) < 0.01) {
+              carry.status = 'cleared';
+              carry.cleared_at = now;
+              carry.cleared_via = `consumed:${winnerId}`;
+            }
+            carry.amount_sgd = newAmount;
+            carry.note = (carry.note || '') + ` · $${reduceBy.toLocaleString()} applied to ${winnerPlayer?.name || 'winner'} via allocator`;
+            carry.updated_at = now;
+            await db.put('carryBalances', carry);
+            // Create new carry for the winner
+            await db.put('carryBalances', {
+              id: crypto.randomUUID(),
+              player_id: winnerId,
+              amount_sgd: amt,
+              origin_session_id: session.id,
+              origin_entry_id: entryId,
+              status: 'open',
+              cleared_at: null,
+              cleared_via: null,
+              rate_used: null,
+              usdt_amount: null,
+              note: `Allocated from ${(this._allocator?.carries || []).find(c => c.id === id)?.name || '?'}'s carry — settle via Carries tab`,
+              updated_at: now,
+              deleted_at: null,
+            });
+          } else if (type === 'park') {
+            // Park remaining as a new carry for the winner
+            await db.put('carryBalances', {
+              id: crypto.randomUUID(),
+              player_id: winnerId,
+              amount_sgd: amt,
+              origin_session_id: session.id,
+              origin_entry_id: entryId,
+              status: 'open',
+              cleared_at: null,
+              cleared_via: null,
+              rate_used: null,
+              usdt_amount: null,
+              note: `Parked from session ${new Date(session.date).toLocaleDateString('en-GB', { day:'numeric', month:'short' })} — allocator`,
+              updated_at: now,
+              deleted_at: null,
+            });
+          }
+        }
+
+        // Mark the entry as cashed out + paid in full via allocator
+        entry.cash_out = cashout;
+        entry.net_pl = cashout - totalBuyin;
+        entry.settlement_method = 'allocated';
+        entry.paid_amount = cashout;
+        entry.notes = entry.notes || null;
+        entry.updated_at = now;
+        await db.put('sessionEntries', entry);
+
+        this.closeModal();
+        this.renderSessionScreen();
+        this.showToast('Settlement allocated');
         this.autoSync();
       },
 
