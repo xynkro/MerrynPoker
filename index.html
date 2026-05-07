@@ -3573,11 +3573,16 @@
         const playersIn = otherEntriesForHeader.filter(e => e.cash_out === null || e.cash_out === undefined).length;
         const playersOut = otherEntriesForHeader.filter(e => e.cash_out !== null && e.cash_out !== undefined).length;
 
+        const dateStr = new Date(session.date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+        const dateEditable = isActive && this.isDealer();
+
         let html = `
           <div class="session-header">
             <div class="session-header-info">
-              <div class="session-header-label">Date</div>
-              <div class="session-header-value">${new Date(session.date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })}</div>
+              <div class="session-header-label">Date${dateEditable ? ' <span style="opacity:0.6;font-size:9px;">(tap to edit)</span>' : ''}</div>
+              ${dateEditable
+                ? `<div class="session-header-value" onclick="app.editSessionDate()" style="cursor:pointer; touch-action:manipulation; border-bottom:1px dashed var(--border-color); display:inline-block;" title="Tap to change session date">${dateStr} ✎</div>`
+                : `<div class="session-header-value">${dateStr}</div>`}
             </div>
             ${this.isOwner() ? `
             <div class="session-header-col">
@@ -4728,6 +4733,42 @@
         this.renderSessionScreen();
         this.showScreen('sessionScreen');
         this.autoSync(); // new session → create sheet tab
+      },
+
+      // Tap-to-edit session date (for retroactively-logged sessions).
+      // Defaults to today on creation; dealer can change while session is active.
+      async editSessionDate() {
+        if (!this.isDealer() || !this.currentSession) return;
+        if (this.currentSession.status !== 'active') {
+          this.showToast('Date is locked once the session is settled');
+          return;
+        }
+        const current = this.currentSession.date; // YYYY-MM-DD
+        this._modalPrompt({
+          title: 'Session date',
+          label: 'Set the date this session was played',
+          defaultValue: current,
+          inputType: 'date',
+          okLabel: 'Save',
+          validator: (val) => {
+            if (!val) return 'Pick a date';
+            // Block far-future dates (probably typo). Allow up to tomorrow.
+            const picked = new Date(val).getTime();
+            const tomorrow = Date.now() + 24*60*60*1000;
+            if (picked > tomorrow) return 'Date is in the future';
+            return null;
+          },
+          onOk: async (newDate) => {
+            if (!newDate || newDate === current) return;
+            this.currentSession.date = newDate;
+            this.currentSession.updated_at = new Date().toISOString();
+            await db.put('sessions', this.currentSession);
+            const fmt = new Date(newDate).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
+            this.showToast(`Date set to ${fmt}`);
+            this.renderSessionScreen();
+            this.autoSync();
+          },
+        });
       },
 
       async addPlayerToSession() {
