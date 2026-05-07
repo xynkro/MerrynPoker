@@ -3976,15 +3976,15 @@
       },
 
       showCustomRebuyModal(entryId) {
-        // Uses _modalPrompt with iOS numeric keyboard. Replaces the old keypad-only
-        // modal that had a closure/global-state bug where amount-not-registering
-        // was silent (Confirm with $0 just dismissed without feedback).
+        // Uses _modalPrompt with iOS numeric keyboard + live thousands-separator
+        // formatting (1000 -> 1,000 -> 100,000 etc) for easier visual parsing.
         this._modalPrompt({
           title: 'Custom rebuy',
           label: 'Amount (SGD)',
-          placeholder: 'e.g. 100000',
+          placeholder: 'e.g. 100,000',
           inputType: 'text',
           inputMode: 'numeric',
+          formatAsNumber: true,
           okLabel: 'Add',
           validator: (val) => {
             const n = parseInt((val || '').replace(/[^0-9]/g, ''), 10);
@@ -8035,17 +8035,22 @@
       // Modal-based replacement for native prompt() — keeps the iOS PWA feel and gives
       // proper inputmode/maxlength control (the password+numeric keyboard for PINs, etc).
       // onOk receives the trimmed string. validator returns an error string (or null).
-      _modalPrompt({ title, label = '', defaultValue = '', placeholder = '', inputType = 'text', maxLength = null, inputMode = null, letterSpacing = null, validator = null, okLabel = 'OK', onOk, onCancel = null }) {
+      _modalPrompt({ title, label = '', defaultValue = '', placeholder = '', inputType = 'text', maxLength = null, inputMode = null, letterSpacing = null, validator = null, okLabel = 'OK', onOk, onCancel = null, formatAsNumber = false }) {
         const modal = document.getElementById('modal');
         document.getElementById('modalTitle').textContent = title;
         const lblHtml = label ? `<div style="font-size:13px; color:var(--text-secondary); margin-bottom:8px;">${this._esc(label)}</div>` : '';
         const lsStyle = letterSpacing ? `letter-spacing:${letterSpacing}; text-align:center;` : '';
+        // Format default value with thousands separators if requested
+        const initialValue = formatAsNumber && defaultValue
+          ? (parseInt(String(defaultValue).replace(/[^0-9]/g, ''), 10) || '').toLocaleString()
+          : defaultValue;
         document.getElementById('modalBody').innerHTML = `
           ${lblHtml}
           <input type="${inputType}" id="_promptInput" class="form-input" autocomplete="off"
-            placeholder="${this._esc(placeholder)}" value="${this._esc(defaultValue)}"
+            placeholder="${this._esc(placeholder)}" value="${this._esc(initialValue)}"
             ${maxLength ? `maxlength="${maxLength}"` : ''}
             ${inputMode ? `inputmode="${inputMode}"` : ''}
+            ${formatAsNumber ? `oninput="app._fmtBuyinInput(this)"` : ''}
             style="font-size:18px; ${lsStyle}">
           <div id="_promptError" style="font-size:12px; color:var(--accent-danger); margin-top:6px; min-height:14px;"></div>
         `;
