@@ -1737,10 +1737,14 @@
               <span style="font-size:13px; color:var(--accent-success); text-transform:uppercase; letter-spacing:1px; font-weight:700;">🃏 Dealer Stash</span>
               <span id="floatStashTotal" style="font-size:22px; font-weight:800; color:var(--accent-success);">$0</span>
             </div>
+            <!-- Outstanding loan-from-float owed by stash. Only visible when > 0. -->
+            <div id="stashOwesFloat" style="display:none; padding:6px 10px; margin-bottom:10px; background:var(--accent-warning)18; border:1px solid var(--accent-warning)44; border-radius:8px; font-size:12px; color:var(--accent-warning); font-weight:700; text-align:center;"></div>
             <div id="floatStashList" style="margin-bottom: 10px; max-height: 160px; overflow-y: auto;"></div>
-            <div style="display:flex; gap:8px;">
-              <button onclick="app.showDealerStashAdjustModal('add')" style="flex:1; padding:10px; border-radius:8px; background:var(--accent-success)22; border:1px solid var(--accent-success)55; color:var(--accent-success); font-size:14px; font-weight:700; cursor:pointer; touch-action:manipulation;">+ Add to Stash</button>
-              <button onclick="app.showDealerStashAdjustModal('withdraw')" style="flex:1; padding:10px; border-radius:8px; background:var(--accent-danger)22; border:1px solid var(--accent-danger)55; color:var(--accent-danger); font-size:14px; font-weight:700; cursor:pointer; touch-action:manipulation;">− Withdraw</button>
+            <div style="display:flex; gap:6px; flex-wrap:wrap;">
+              <button onclick="app.showDealerStashAdjustModal('add')" style="flex:1; min-width:80px; padding:10px 4px; border-radius:8px; background:var(--accent-success)22; border:1px solid var(--accent-success)55; color:var(--accent-success); font-size:12px; font-weight:700; cursor:pointer; touch-action:manipulation;">+ Add</button>
+              <button onclick="app.showDealerStashAdjustModal('withdraw')" style="flex:1; min-width:80px; padding:10px 4px; border-radius:8px; background:var(--accent-danger)22; border:1px solid var(--accent-danger)55; color:var(--accent-danger); font-size:12px; font-weight:700; cursor:pointer; touch-action:manipulation;">− Withdraw</button>
+              <button onclick="app.showStashExpenseModal()" style="flex:1; min-width:90px; padding:10px 4px; border-radius:8px; background:var(--accent-warning)18; border:1px solid var(--accent-warning)44; color:var(--accent-warning); font-size:12px; font-weight:700; cursor:pointer; touch-action:manipulation;">💸 Expense</button>
+              <button id="stashRepayBtn" onclick="app.showStashRepayFloatModal()" style="display:none; flex:1; min-width:90px; padding:10px 4px; border-radius:8px; background:var(--accent-primary)22; border:1px solid var(--accent-primary)55; color:var(--accent-primary); font-size:12px; font-weight:700; cursor:pointer; touch-action:manipulation;">↪️ Repay Float</button>
             </div>
           </div>
 
@@ -3270,6 +3274,9 @@
           if (tx.type === 'SESSION_LOSS') { icon = '📉'; label = 'Session Loss'; }
           if (tx.type === 'FLOAT_DRAW') { icon = '🏦'; label = 'Drew from Float'; }
           if (tx.type === 'ADJUSTMENT') { icon = '⚙️'; label = 'Adjustment'; }
+          if (tx.type === 'EXPENSE') { icon = '💸'; label = tx.note || 'Expense'; }
+          if (tx.type === 'EXPENSE_VIA_FLOAT') { icon = '💸'; label = tx.note || 'Expense (via Float)'; }
+          if (tx.type === 'FLOAT_REPAY') { icon = '↪️'; label = 'Repaid Float'; }
 
           txHtml += `
             <div style="display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border-color);">
@@ -3397,6 +3404,197 @@
             `${type === 'withdraw' ? 'Withdrawing from' : 'Adding to'} Dealer Stash ($${raw.toLocaleString()})`,
             doAction
           );
+        } else {
+          await doAction();
+        }
+      },
+
+      // Record a real-world expense paid from the Stash. If the dealer didn't
+      // have enough in the stash and borrowed from Derrick's float, that gets
+      // tracked as a Stash→Float IOU (visible on the Stash card with a
+      // "Repay Float" button when > 0).
+      showStashExpenseModal() {
+        const modal = document.getElementById('modal');
+        document.getElementById('modalTitle').textContent = '💸 Stash Expense';
+        document.getElementById('modalBody').innerHTML = `
+          <div class="form-group">
+            <label class="form-label">Amount (SGD)</label>
+            <input type="text" inputmode="numeric" class="form-input" id="seAmount" placeholder="e.g. 250"
+              oninput="app._fmtBuyinInput(this)" onclick="this.select()" style="font-size:22px; text-align:center;">
+          </div>
+          <div class="form-group">
+            <label class="form-label">What for?</label>
+            <input type="text" class="form-input" id="seNote" placeholder="e.g. Maid for Wed night, drinks, food">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Source</label>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+              <button type="button" data-src="stash" onclick="app._sePickSource(this)" class="btn btn-secondary active"
+                style="padding:11px; font-size:13px;">🃏 From Stash</button>
+              <button type="button" data-src="float" onclick="app._sePickSource(this)" class="btn btn-secondary"
+                style="padding:11px; font-size:13px;">🏦 Borrow Float</button>
+            </div>
+            <div id="seSourceHint" style="font-size:11px; color:var(--text-secondary); margin-top:6px;">Stash balance reduces by this amount.</div>
+          </div>
+        `;
+        document.getElementById('modalFooter').innerHTML = `
+          <button class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="app.confirmStashExpense()">Save</button>
+        `;
+        modal.classList.add('show');
+      },
+
+      _sePickSource(btn) {
+        document.querySelectorAll('#modalBody [data-src]').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const hint = document.getElementById('seSourceHint');
+        if (hint) {
+          hint.textContent = btn.dataset.src === 'float'
+            ? 'Float pays the expense; Stash will owe Float this amount until repaid.'
+            : 'Stash balance reduces by this amount.';
+        }
+      },
+
+      async confirmStashExpense() {
+        const raw = (document.getElementById('seAmount').value || '').replace(/[^0-9]/g, '');
+        const amount = parseInt(raw, 10);
+        if (!amount || amount <= 0) { this.showToast('Enter a valid amount'); return; }
+        const note = (document.getElementById('seNote').value || '').trim() || 'Expense';
+        const source = document.querySelector('#modalBody [data-src].active')?.dataset.src || 'stash';
+        const now = new Date().toISOString();
+
+        const doAction = async () => {
+          if (source === 'stash') {
+            await db.put('dealerStashTransactions', {
+              id: crypto.randomUUID(),
+              session_id: null,
+              timestamp: now,
+              type: 'EXPENSE',
+              amount_sgd: -amount,
+              player_id: null,
+              note,
+              updated_at: now,
+              deleted_at: null,
+            });
+          } else {
+            // Borrow from Float to pay expense.
+            // Float -X (cash leaves Derrick's pocket); creates an IOU tracked via STASH_LOAN type.
+            // No corresponding stash entry — money never sat in stash, it went straight to the expense.
+            await db.put('floatTransactions', {
+              id: crypto.randomUUID(),
+              session_id: null,
+              timestamp: now,
+              type: 'STASH_LOAN',
+              amount_sgd: -amount,
+              amount_usdt: 0,
+              rate_used: null,
+              player_id: null,
+              note: `Float covered stash expense: ${note} (Stash owes Float $${amount.toLocaleString()})`,
+              updated_at: now,
+              deleted_at: null,
+            });
+            // Audit trail in stash ledger so Sarah sees the expense in her stash history too.
+            await db.put('dealerStashTransactions', {
+              id: crypto.randomUUID(),
+              session_id: null,
+              timestamp: now,
+              type: 'EXPENSE_VIA_FLOAT',
+              amount_sgd: 0,
+              player_id: null,
+              note: `${note} — paid by Float (Stash owes $${amount.toLocaleString()})`,
+              updated_at: now,
+              deleted_at: null,
+            });
+          }
+          this.closeModal();
+          this.showToast(source === 'stash' ? 'Expense recorded' : 'Expense recorded — Stash owes Float');
+          this.updateDealerStashDisplay();
+          this.renderFloatScreen();
+          this.renderDashboard();
+          this.autoSync();
+        };
+
+        if (!this.isOwner()) {
+          this._requireOwnerPin(`Stash expense ($${amount.toLocaleString()}) via ${source === 'stash' ? 'Stash' : 'Float loan'}`, doAction);
+        } else {
+          await doAction();
+        }
+      },
+
+      // Repay outstanding Stash→Float loan balance from current Stash cash.
+      async showStashRepayFloatModal() {
+        const transactions = await db.getAll('floatTransactions');
+        const stashLoanOut = transactions.filter(t => t.type === 'STASH_LOAN' && !t.deleted_at).reduce((s, t) => s + Math.abs(t.amount_sgd || 0), 0);
+        const stashLoanRepaid = transactions.filter(t => t.type === 'STASH_REPAY' && !t.deleted_at).reduce((s, t) => s + (t.amount_sgd || 0), 0);
+        const owed = Math.max(0, stashLoanOut - stashLoanRepaid);
+        if (owed <= 0) { this.showToast('No outstanding loan to repay'); return; }
+
+        const modal = document.getElementById('modal');
+        document.getElementById('modalTitle').textContent = 'Repay Float from Stash';
+        document.getElementById('modalBody').innerHTML = `
+          <div style="margin-bottom:14px; padding:10px 12px; background:var(--bg-tertiary); border-radius:10px;">
+            <div style="display:flex; justify-content:space-between;">
+              <span style="color:var(--text-secondary); font-size:13px;">Stash owes Float</span>
+              <span style="font-weight:800; color:var(--accent-warning);">$${owed.toLocaleString()}</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Amount to repay (SGD)</label>
+            <input type="text" inputmode="numeric" class="form-input" id="srAmount" value="${owed.toLocaleString()}"
+              oninput="app._fmtBuyinInput(this)" onclick="this.select()" style="font-size:22px; text-align:center;">
+            <div style="font-size:11px; color:var(--text-secondary); margin-top:6px;">Repay anywhere from $1 to $${owed.toLocaleString()}.</div>
+          </div>
+        `;
+        document.getElementById('modalFooter').innerHTML = `
+          <button class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="app.confirmStashRepayFloat(${owed})">Repay</button>
+        `;
+        modal.classList.add('show');
+      },
+
+      async confirmStashRepayFloat(maxOwed) {
+        const raw = (document.getElementById('srAmount').value || '').replace(/[^0-9]/g, '');
+        const amount = parseInt(raw, 10);
+        if (!amount || amount <= 0) { this.showToast('Enter a valid amount'); return; }
+        if (amount > maxOwed) { this.showToast(`Cannot repay more than owed ($${maxOwed.toLocaleString()})`); return; }
+        const now = new Date().toISOString();
+
+        const doAction = async () => {
+          // Stash → Float: deduct from stash, add to float, mark loan repaid
+          await db.put('dealerStashTransactions', {
+            id: crypto.randomUUID(),
+            session_id: null,
+            timestamp: now,
+            type: 'FLOAT_REPAY',
+            amount_sgd: -amount,
+            player_id: null,
+            note: `Repaid Float (was a stash loan)`,
+            updated_at: now,
+            deleted_at: null,
+          });
+          await db.put('floatTransactions', {
+            id: crypto.randomUUID(),
+            session_id: null,
+            timestamp: now,
+            type: 'STASH_REPAY',
+            amount_sgd: amount,
+            amount_usdt: 0,
+            rate_used: null,
+            player_id: null,
+            note: `Stash repaid Float $${amount.toLocaleString()}`,
+            updated_at: now,
+            deleted_at: null,
+          });
+          this.closeModal();
+          this.showToast(`Repaid $${amount.toLocaleString()} to Float`);
+          this.updateDealerStashDisplay();
+          this.renderFloatScreen();
+          this.renderDashboard();
+          this.autoSync();
+        };
+
+        if (!this.isOwner()) {
+          this._requireOwnerPin(`Repay Float $${amount.toLocaleString()} from Stash`, doAction);
         } else {
           await doAction();
         }
@@ -8266,6 +8464,23 @@
         const stashTotalEl = document.getElementById('floatStashTotal');
         if (stashTotalEl) stashTotalEl.textContent = `$${stashTotal.toLocaleString()}`;
 
+        // Compute Stash → Float IOU: sum of float-loan-out minus repay-back.
+        // Stored as floatTransactions of type STASH_LOAN (negative amount_sgd) and STASH_REPAY (positive).
+        const stashLoanOut = transactions.filter(t => t.type === 'STASH_LOAN' && !t.deleted_at).reduce((s, t) => s + Math.abs(t.amount_sgd || 0), 0);
+        const stashLoanRepaid = transactions.filter(t => t.type === 'STASH_REPAY' && !t.deleted_at).reduce((s, t) => s + (t.amount_sgd || 0), 0);
+        const stashOwesFloat = Math.max(0, stashLoanOut - stashLoanRepaid);
+        const owesEl = document.getElementById('stashOwesFloat');
+        const repayBtn = document.getElementById('stashRepayBtn');
+        if (owesEl) {
+          if (stashOwesFloat > 0) {
+            owesEl.style.display = '';
+            owesEl.textContent = `Stash owes Float: $${stashOwesFloat.toLocaleString()}`;
+          } else {
+            owesEl.style.display = 'none';
+          }
+        }
+        if (repayBtn) repayBtn.style.display = stashOwesFloat > 0 ? '' : 'none';
+
         const stashList = document.getElementById('floatStashList');
         if (stashList) {
           const recentDs = [...dsTxs].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 8);
@@ -8281,11 +8496,14 @@
                 if (tx.type === 'SESSION_PROFIT') { icon = '🃏'; lbl = 'Session Profit'; }
                 if (tx.type === 'SESSION_LOSS') { icon = '📉'; lbl = 'Session Loss'; }
                 if (tx.type === 'ADJUSTMENT') { icon = '⚙️'; lbl = tx.note || 'Adjustment'; }
+                if (tx.type === 'EXPENSE') { icon = '💸'; lbl = tx.note || 'Expense'; }
+                if (tx.type === 'EXPENSE_VIA_FLOAT') { icon = '💸'; lbl = (tx.note || 'Expense'); }
+                if (tx.type === 'FLOAT_REPAY') { icon = '↪️'; lbl = 'Repaid Float'; }
                 const amt = tx.amount_sgd;
                 return `
                   <div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-bottom:1px solid #ffffff0a; font-size:13px;">
                     <span style="color:var(--text-secondary);">${icon} ${lbl} · ${new Date(tx.timestamp).toLocaleDateString()}</span>
-                    <span style="font-weight:700; color:${amt >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)'};">${amt >= 0 ? '+' : ''}$${Math.abs(amt).toLocaleString()}</span>
+                    <span style="font-weight:700; color:${amt >= 0 ? 'var(--accent-success)' : amt < 0 ? 'var(--accent-danger)' : 'var(--text-secondary)'};">${amt > 0 ? '+' : amt < 0 ? '-' : ''}${amt !== 0 ? '$' + Math.abs(amt).toLocaleString() : '—'}</span>
                   </div>`;
               }).join('');
         }
