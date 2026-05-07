@@ -3729,7 +3729,8 @@
             html += `<div style="text-align:center; color:var(--accent-success); padding: 20px; font-weight:700;">✅ All players cashed out</div>`;
           }
 
-          // Active players — show name + amount input + Cash Out button
+          // Active players — show name + amount input + Cash Out button.
+          // As the dealer types a cashout amount, the row's P/L preview updates live.
           for (const entry of activeEntries) {
             const player = playerMap[entry.player_id];
             const totalBuyin = (entry.buy_ins || []).reduce((sum, b) => sum + b.amount, 0);
@@ -3738,16 +3739,20 @@
               <div class="player-card" style="border-color: var(--accent-warning)33; flex-wrap: wrap; gap: 8px;">
                 <div style="flex: 1; min-width: 0;">
                   <div class="player-name">${player?.name || '?'}${roleBadge}</div>
-                  <div style="font-size: 12px; color: var(--text-secondary);">In: $${totalBuyin.toLocaleString()}</div>
+                  <div style="font-size: 12px; color: var(--text-secondary);">
+                    In: $${totalBuyin.toLocaleString()}
+                    <span id="pl_${entry.id}" style="margin-left:8px; font-weight:800;"></span>
+                  </div>
                 </div>
                 ${isActive && this.isDealer() ? `
                 <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
                   <input type="text" inputmode="numeric" id="co_${entry.id}"
+                    data-buyin="${totalBuyin}" data-entry-id="${entry.id}"
                     placeholder="Cash out"
                     onclick="this.select()"
                     oninput="app._fmtCashoutInput(this)"
-                    style="width: 90px; padding: 7px 8px; background: var(--bg-tertiary); color: var(--text-primary);
-                           border: 1px solid var(--border-color); border-radius: 8px; font-size: 14px;
+                    style="width: 96px; padding: 7px 8px; background: var(--bg-tertiary); color: var(--text-primary);
+                           border: 1px solid var(--border-color); border-radius: 8px; font-size: 16px;
                            text-align: center; font-weight: 700; touch-action: manipulation;">
                   <button onclick="app.cashOutFromTab('${entry.id}')"
                     style="padding: 8px 10px; border-radius: 8px; background: var(--accent-success)22;
@@ -4378,6 +4383,18 @@
       _fmtCashoutInput(input) {
         const raw = input.value.replace(/[^0-9]/g, '');
         input.value = raw ? parseInt(raw).toLocaleString() : '';
+        // Live P/L preview: updates the span next to "In: $X"
+        const entryId = input.dataset.entryId;
+        if (!entryId) return;
+        const plEl = document.getElementById('pl_' + entryId);
+        if (!plEl) return;
+        if (!raw) { plEl.textContent = ''; return; }
+        const buyin = parseInt(input.dataset.buyin || '0', 10);
+        const amount = parseInt(raw, 10);
+        const pl = amount - buyin;
+        const sign = pl >= 0 ? '+' : '−';
+        plEl.style.color = pl >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)';
+        plEl.textContent = `${sign}$${Math.abs(pl).toLocaleString()}`;
       },
 
       async removePlayer(entryId, sessionId) {
