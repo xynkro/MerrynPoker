@@ -1629,6 +1629,16 @@
             </div>
           </div>
 
+          <!-- USDT/SGD rate used for any Float USDT settlements this session.
+               Auto-filled with the live CoinGecko rate; dealer can override. -->
+          <div style="display:flex; align-items:center; gap:10px; padding:8px 14px; margin: 0 16px 12px; background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:10px; font-size:13px;">
+            <span style="color:var(--text-secondary);">USDT rate</span>
+            <input type="number" step="0.0001" inputmode="decimal" id="settlementUsdtRate"
+              style="flex:1; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
+            <span style="color:var(--text-secondary);">SGD/USDT</span>
+            <span id="settlementRateLive" style="font-size:11px; color:var(--text-secondary);"></span>
+          </div>
+
           <div class="settlement-table" id="settlementTable"></div>
 
           <div id="paymentRecommendations" style="margin-bottom: 16px;"></div>
@@ -5276,7 +5286,27 @@
         }
 
         // Store settlement data for commit
-        app.settlementData = { session: this.currentSession, positions, floatCash, floatUsdt, entries, carries, players };
+        app.settlementData = { session: this.currentSession, positions, floatCash, floatUsdt, entries, carries, players, usdtRate: 1.35 };
+
+        // Wire the USDT/SGD rate input — live fetch + manual override.
+        const rateInp = document.getElementById('settlementUsdtRate');
+        const rateLive = document.getElementById('settlementRateLive');
+        if (rateInp) {
+          rateInp.value = (1.35).toFixed(4); // sensible default while live rate fetches
+          rateInp.oninput = () => {
+            const v = parseFloat(rateInp.value);
+            if (v && v > 0) { app.settlementData.usdtRate = v; app.updateSettlementProjection(); }
+          };
+          this.fetchLiveRates().then(({ usdtSgd }) => {
+            if (usdtSgd && rateInp) {
+              rateInp.value = Number(usdtSgd).toFixed(4);
+              app.settlementData.usdtRate = Number(usdtSgd);
+              if (rateLive) rateLive.textContent = `(live)`;
+              app.updateSettlementProjection();
+            }
+          });
+        }
+
         app.updateSettlementProjection();
         app.renderPaymentRecommendations(positions, players);
       },
@@ -5316,14 +5346,15 @@
               cashDelta += abs;  // Loser pays into float
             }
           } else if (method === 'float_usdt') {
+            // Direct USDT payout (no SGD swap). USDT = SGD / rate.
+            const rate = app.settlementData.usdtRate || 1.35;
+            const usdt = abs / rate;
             if (amt > 0) {
-              // Pay winner in USDT, collect SGD equivalent
-              usdtDelta -= abs;
-              cashDelta += abs;
+              // Winner paid in USDT from float — float USDT goes down
+              usdtDelta -= usdt;
             } else {
-              // Collect USDT from loser, give SGD equivalent
-              usdtDelta += abs;
-              cashDelta -= abs;
+              // Loser pays USDT to float — float USDT goes up
+              usdtDelta += usdt;
             }
           }
         }
@@ -5333,9 +5364,12 @@
 
         const impactEl = document.getElementById('projectedCash');
         const afterEl = document.getElementById('projectedUsdt');
-        impactEl.textContent = `${cashDelta >= 0 ? '+' : ''}$${Math.abs(cashDelta).toLocaleString()} SGD`;
+        const fmtUsdt = (v) => Math.abs(v) < 1 ? v.toFixed(4) : v.toFixed(2);
+        const sgdImpact = cashDelta >= 0 ? `+$${cashDelta.toLocaleString()}` : `-$${Math.abs(cashDelta).toLocaleString()}`;
+        const usdtImpact = usdtDelta === 0 ? '' : `, ${usdtDelta > 0 ? '+' : '−'}${fmtUsdt(Math.abs(usdtDelta))}T`;
+        impactEl.textContent = sgdImpact + usdtImpact;
         impactEl.style.color = cashDelta >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)';
-        afterEl.textContent = `$${newCash.toLocaleString()} / ${newUsdt.toLocaleString()} USDT`;
+        afterEl.textContent = `$${Math.round(newCash).toLocaleString()} / ${fmtUsdt(newUsdt)}T`;
       },
 
       renderPaymentRecommendations(positions, players) {
@@ -5520,65 +5554,38 @@
               });
             }
           } else if (method === 'float_usdt') {
-            // USDT swap via Derrick's float:
-            // Winner: Derrick pays USDT out, gets SGD cash equivalent in
-            // Loser: pays USDT in to Derrick, Derrick gives SGD cash equivalent out
+            // Direct USDT payout — no SGD swap leg. Float USDT decreases (or
+            // increases for losers) by SGD/rate. Rate captured at commit time.
+            const rate = app.settlementData?.usdtRate || 1.35;
             const absSgd = Math.abs(amt);
+            const absUsdt = absSgd / rate;
             if (amt > 0) {
-              // Player WON → Dealer pays them USDT from float
-              // Derrick's USDT goes down, Derrick's cash goes up (swap)
+              // Player WON → paid in USDT from Derrick's float (USDT goes down).
               await db.put('floatTransactions', {
                 id: crypto.randomUUID(),
                 session_id: session.id,
                 timestamp: new Date().toISOString(),
                 type: 'USDT_PAYOUT',
                 amount_sgd: 0,
-                amount_usdt: -absSgd,
-                rate_used: null,
+                amount_usdt: -absUsdt,
+                rate_used: rate,
                 player_id: pos.player_id,
-                note: `USDT payout to ${pos.player?.name} (SGD equiv $${absSgd.toLocaleString()})`,
-                updated_at: new Date().toISOString(),
-                deleted_at: null,
-              });
-              await db.put('floatTransactions', {
-                id: crypto.randomUUID(),
-                session_id: session.id,
-                timestamp: new Date().toISOString(),
-                type: 'USDT_SWAP_CASH_IN',
-                amount_sgd: absSgd,
-                amount_usdt: 0,
-                rate_used: null,
-                player_id: pos.player_id,
-                note: `Cash in from ${pos.player?.name} USDT swap`,
+                note: `USDT payout to ${pos.player?.name}: ${absUsdt.toFixed(2)}T @ ${rate.toFixed(4)} = $${absSgd.toLocaleString()}`,
                 updated_at: new Date().toISOString(),
                 deleted_at: null,
               });
             } else {
-              // Player LOST → pays USDT to Derrick's float
-              // Derrick's USDT goes up, Derrick's cash goes down (swap)
+              // Player LOST → pays USDT into Derrick's float (USDT goes up).
               await db.put('floatTransactions', {
                 id: crypto.randomUUID(),
                 session_id: session.id,
                 timestamp: new Date().toISOString(),
                 type: 'USDT_COLLECTION',
                 amount_sgd: 0,
-                amount_usdt: absSgd,
-                rate_used: null,
+                amount_usdt: absUsdt,
+                rate_used: rate,
                 player_id: pos.player_id,
-                note: `USDT collected from ${pos.player?.name} (SGD equiv $${absSgd.toLocaleString()})`,
-                updated_at: new Date().toISOString(),
-                deleted_at: null,
-              });
-              await db.put('floatTransactions', {
-                id: crypto.randomUUID(),
-                session_id: session.id,
-                timestamp: new Date().toISOString(),
-                type: 'USDT_SWAP_CASH_OUT',
-                amount_sgd: -absSgd,
-                amount_usdt: 0,
-                rate_used: null,
-                player_id: pos.player_id,
-                note: `Cash out for ${pos.player?.name} USDT swap`,
+                note: `USDT collected from ${pos.player?.name}: ${absUsdt.toFixed(2)}T @ ${rate.toFixed(4)} = $${absSgd.toLocaleString()}`,
                 updated_at: new Date().toISOString(),
                 deleted_at: null,
               });
@@ -7199,7 +7206,7 @@
           this.showClearCarryPlayerPicker(carryId);
 
         } else if (method === 'usdt') {
-          // Show USDT details modal
+          // Show USDT details modal — auto-computes USDT from rate, both editable.
           const modal = document.getElementById('modal');
           document.getElementById('modalTitle').textContent = `Clear ${name} via USDT`;
           document.getElementById('modalBody').innerHTML = `
@@ -7207,12 +7214,13 @@
               Amount: <strong style="color: var(--text-primary);">${amt}</strong>
             </div>
             <div class="form-group">
-              <label class="form-label">USDT Amount</label>
-              <input type="number" class="form-input" id="usdtAmount" placeholder="USDT amount" inputmode="decimal">
+              <label class="form-label">Rate (SGD per USDT)</label>
+              <input type="number" class="form-input" id="rateUsed" placeholder="loading…" step="0.0001" inputmode="decimal" value="1.35">
+              <div id="rateHint" style="font-size:11px; color:var(--text-secondary); margin-top:4px;">Auto-computes USDT below</div>
             </div>
             <div class="form-group">
-              <label class="form-label">Rate (SGD per USDT)</label>
-              <input type="number" class="form-input" id="rateUsed" placeholder="e.g. 1.35" step="0.01" inputmode="decimal">
+              <label class="form-label">USDT Amount</label>
+              <input type="number" class="form-input" id="usdtAmount" placeholder="auto" step="0.01" inputmode="decimal">
             </div>
             <div class="form-group">
               <label class="form-label">Note (optional)</label>
@@ -7223,6 +7231,26 @@
             <button class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
             <button class="btn btn-primary" onclick="app.confirmClearUsdt('${carryId}')">Confirm</button>
           `;
+
+          const rateInp = document.getElementById('rateUsed');
+          const usdtInp = document.getElementById('usdtAmount');
+          const recompute = () => {
+            const rate = parseFloat(rateInp.value);
+            if (rate > 0) usdtInp.value = (absAmt / rate).toFixed(2);
+          };
+          recompute();
+          rateInp.oninput = recompute;
+          // Live rate fetch (auto-fills if user hasn't typed yet)
+          this.fetchLiveRates().then(({ usdtSgd }) => {
+            if (usdtSgd && rateInp && !rateInp.dataset.touched) {
+              rateInp.value = Number(usdtSgd).toFixed(4);
+              const hint = document.getElementById('rateHint');
+              if (hint) hint.textContent = `Live rate: ${Number(usdtSgd).toFixed(4)} (override if you have a different deal rate)`;
+              recompute();
+            }
+          });
+          rateInp.addEventListener('change', () => { rateInp.dataset.touched = '1'; });
+
           modal.classList.add('show');
         }
       },
@@ -7276,15 +7304,40 @@
       async confirmClearUsdt(carryId) {
         const carry = await db.get('carryBalances', carryId);
         if (!carry) return;
+        const usdt = parseFloat(document.getElementById('usdtAmount').value) || 0;
+        const rate = parseFloat(document.getElementById('rateUsed').value) || 0;
+        const note = document.getElementById('clearedNote').value || carry.note;
+        if (!usdt || !rate) { this.showToast('Enter USDT amount and rate'); return; }
+
         carry.status = 'cleared';
         carry.cleared_at = new Date().toISOString();
         carry.cleared_via = 'usdt';
-        carry.usdt_amount = parseFloat(document.getElementById('usdtAmount').value) || 0;
-        carry.rate_used = parseFloat(document.getElementById('rateUsed').value) || 0;
-        carry.note = document.getElementById('clearedNote').value || carry.note;
+        carry.usdt_amount = usdt;
+        carry.rate_used = rate;
+        carry.note = note;
         await db.put('carryBalances', carry);
+
+        // Mirror the USDT movement onto Derrick's float so the balance reflects.
+        // amount_sgd > 0  → player is owed → float USDT goes DOWN (we pay out)
+        // amount_sgd < 0  → player owes    → float USDT goes UP   (they pay us)
+        const isOwed = carry.amount_sgd > 0;
         const player = (await db.getAll('players')).find(p => p.id === carry.player_id);
-        this.showToast(`${player?.name || 'Player'} cleared via USDT`);
+        const name = player?.name || 'Player';
+        await db.put('floatTransactions', {
+          id: crypto.randomUUID(),
+          session_id: carry.origin_session_id,
+          timestamp: new Date().toISOString(),
+          type: isOwed ? 'USDT_PAYOUT' : 'USDT_COLLECTION',
+          amount_sgd: 0,
+          amount_usdt: isOwed ? -usdt : usdt,
+          rate_used: rate,
+          player_id: carry.player_id,
+          note: `Carry cleared via USDT — ${isOwed ? 'paid to' : 'collected from'} ${name}: ${usdt.toFixed(2)}T @ ${rate.toFixed(4)}`,
+          updated_at: new Date().toISOString(),
+          deleted_at: null,
+        });
+
+        this.showToast(`${name} cleared via USDT`);
         this.closeModal();
         this.renderCarriesScreen();
       },
