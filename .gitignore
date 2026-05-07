@@ -13,6 +13,8 @@
 *.csv
 *.json
 !manifest.json
+!firebase.json
+!database.rules.json
 *.sqlite
 *.db
 backups/

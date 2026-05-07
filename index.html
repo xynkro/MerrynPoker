@@ -12,6 +12,10 @@
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
   <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
   <title>Merryn Poker</title>
+  <!-- Firebase Realtime Database — multi-device live sync.
+       Config keys are public-by-design (Web SDK); access is gated by RTDB security rules. -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
   <style>
     * {
       margin: 0;
@@ -2003,7 +2007,12 @@
           const tx = this.instance.transaction([storeName], 'readwrite');
           const store = tx.objectStore(storeName);
           const req = store.put(record);
-          req.onsuccess = () => resolve(record);
+          req.onsuccess = () => {
+            // Mirror to Firebase RTDB (fire-and-forget; safe no-op if cloud not connected
+            // or when applying an inbound remote change).
+            if (typeof cloud !== 'undefined') cloud.mirror(storeName, record);
+            resolve(record);
+          };
           req.onerror = () => reject(req.error);
         });
       },
@@ -2048,8 +2057,222 @@
       async softDelete(storeName, id) {
         const record = await this.get(storeName, id);
         if (record) {
-          record.deleted_at = new Date().toISOString();
+          const now = new Date().toISOString();
+          record.deleted_at = now;
+          record.updated_at = now; // bump so the deletion propagates to other devices via cloud sync
           await this.put(storeName, record);
+        }
+      },
+    };
+
+    // ============================================================================
+    // Cloud sync (Firebase Realtime Database)
+    //   - Mirrors every db.put / db.softDelete to RTDB
+    //   - Subscribes to all stores; remote changes write into IndexedDB and
+    //     trigger a throttled re-render of the active screen
+    //   - Last-writer-wins via updated_at timestamp comparison
+    //   - Fully optional: app keeps working offline if Firebase fails to load
+    // ============================================================================
+    const FIREBASE_CONFIG = {
+      apiKey: "AIzaSyCEKB5der1vq5IocJV--00xImJThwyZDEQ",
+      authDomain: "merrynpoker.firebaseapp.com",
+      databaseURL: "https://merrynpoker-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "merrynpoker",
+      storageBucket: "merrynpoker.firebasestorage.app",
+      messagingSenderId: "606772097464",
+      appId: "1:606772097464:web:3d8b52a3fd65500fb35f4d",
+    };
+
+    const cloud = {
+      STORES: ['players', 'sessions', 'sessionEntries', 'floatTransactions', 'carryBalances', 'tablePayments', 'dealerStashTransactions'],
+      _fb: null,
+      _connected: false,
+      _suppressMirror: false,   // set true while applying an inbound remote change so we don't echo it back
+      _renderPending: false,
+      _initialSnapshot: {},     // store -> { id -> true } for records seen during initial subscription burst
+
+      async init(config) {
+        if (this._initStarted) return; // idempotency guard — prevents re-entrant bootstraps
+        this._initStarted = true;
+        if (typeof firebase === 'undefined') {
+          console.warn('[cloud] Firebase SDK not loaded — running local-only.');
+          return;
+        }
+        try {
+          if (!firebase.apps.length) firebase.initializeApp(config);
+        } catch(e) { console.warn('[cloud] init error:', e); return; }
+        this._fb = firebase.database();
+
+        // Connection status badge
+        this._fb.ref('.info/connected').on('value', (snap) => {
+          this._connected = snap.val() === true;
+          this._updateBadge();
+        });
+
+        // FIRST-TIME JOIN: decide who's authoritative.
+        // - If cloud has data already (another device set it up first), wipe local
+        //   IndexedDB so we don't end up with duplicate seed records. The listeners
+        //   below will repopulate from cloud.
+        // - If cloud is empty, push local data up to seed it.
+        const FLAG = 'mp_firebase_bootstrapped_v1';
+        if (!localStorage.getItem(FLAG)) {
+          try {
+            // limitToFirst(1) keeps the empty-check fast even for big stores.
+            const probeSnap = await this._withTimeout(
+              this._fb.ref('players').limitToFirst(1).once('value'),
+              8000, 'probe'
+            );
+            const cloudHasPlayers = probeSnap.exists() && probeSnap.numChildren() > 0;
+            if (cloudHasPlayers) {
+              console.log('[cloud] Cloud has existing data — wiping local IndexedDB and pulling fresh.');
+              await this._wipeLocal();
+            } else {
+              console.log('[cloud] Cloud is empty — seeding from local IndexedDB.');
+              await this._withTimeout(this._bootstrapPushLocal(), 30000, 'bootstrap');
+            }
+            localStorage.setItem(FLAG, '1');
+          } catch(e) {
+            console.warn('[cloud] first-time setup failed; will retry next load:', e);
+            // Don't set flag — try again next launch
+          }
+        }
+
+        // Subscribe to every store. child_added fires once per existing record on first
+        // connection, then for any new record from any device. child_changed fires on edits.
+        // child_removed handles hard deletes (uncommon — app uses soft-delete via deleted_at).
+        for (const store of this.STORES) {
+          this._initialSnapshot[store] = new Set();
+          const ref = this._fb.ref(store);
+          ref.on('child_added',   (snap) => this._handleRemote(store, snap.key, snap.val()));
+          ref.on('child_changed', (snap) => this._handleRemote(store, snap.key, snap.val()));
+          ref.on('child_removed', (snap) => this._handleRemoteRemove(store, snap.key));
+        }
+      },
+
+      async _wipeLocal() {
+        // Clear every IndexedDB store so cloud becomes the source of truth.
+        // localStorage (PINs, UI prefs) is preserved.
+        for (const store of this.STORES) {
+          await new Promise((resolve, reject) => {
+            const tx = db.instance.transaction([store], 'readwrite');
+            const req = tx.objectStore(store).clear();
+            req.onsuccess = () => resolve();
+            req.onerror = () => reject(req.error);
+          });
+        }
+      },
+
+      async _handleRemoteRemove(store, id) {
+        if (!id) return;
+        this._suppressMirror = true;
+        try {
+          await new Promise((resolve, reject) => {
+            const tx = db.instance.transaction([store], 'readwrite');
+            const req = tx.objectStore(store).delete(id);
+            req.onsuccess = () => resolve();
+            req.onerror = () => reject(req.error);
+          });
+        } catch(e) { console.warn('[cloud] local delete failed:', e); }
+        finally { this._suppressMirror = false; }
+        this._scheduleRender();
+      },
+
+      async _bootstrapPushLocal() {
+        if (!this._fb) return;
+        // Batch every record across every store into a single multi-path update
+        // so the entire seed pushes in one round-trip instead of N×stores.
+        const updates = {};
+        let total = 0;
+        for (const store of this.STORES) {
+          const all = await new Promise((resolve, reject) => {
+            const tx = db.instance.transaction([store], 'readonly');
+            const req = tx.objectStore(store).getAll();
+            req.onsuccess = () => resolve(req.result || []);
+            req.onerror = () => reject(req.error);
+          });
+          for (const record of all) {
+            if (!record?.id) continue;
+            updates[`${store}/${record.id}`] = record;
+            total++;
+          }
+        }
+        if (total === 0) { console.log('[cloud] Bootstrap: nothing to push.'); return; }
+        try {
+          await this._fb.ref().update(updates);
+          console.log(`[cloud] Initial bootstrap to Firebase complete (${total} records).`);
+        } catch(e) {
+          console.warn('[cloud] bootstrap update failed:', e);
+          throw e;
+        }
+      },
+
+      // Called from db.put on every IndexedDB write. Fire-and-forget.
+      async mirror(store, record) {
+        if (this._suppressMirror) return;
+        if (!this._fb || !record?.id) return;
+        try {
+          await this._fb.ref(`${store}/${record.id}`).set(record);
+        } catch(e) { console.warn('[cloud] mirror failed:', store, record.id, e); }
+      },
+
+      // Inbound change from RTDB. Apply only if newer than the local copy.
+      async _handleRemote(store, id, remote) {
+        if (!remote || !id) return;
+        // Track that we've seen this id during the initial burst so bootstrap doesn't double-write
+        this._initialSnapshot[store]?.add(id);
+
+        let local = null;
+        try { local = await db.get(store, id); } catch(e) {}
+
+        const localTime  = local?.updated_at  ? new Date(local.updated_at).getTime()  : 0;
+        const remoteTime = remote.updated_at  ? new Date(remote.updated_at).getTime() : 0;
+        if (localTime >= remoteTime) return; // local is at least as fresh — ignore
+
+        this._suppressMirror = true;
+        try {
+          await new Promise((resolve, reject) => {
+            const tx = db.instance.transaction([store], 'readwrite');
+            const req = tx.objectStore(store).put(remote);
+            req.onsuccess = () => resolve();
+            req.onerror = () => reject(req.error);
+          });
+        } catch(e) { console.warn('[cloud] local apply failed:', e); }
+        finally { this._suppressMirror = false; }
+
+        this._scheduleRender();
+      },
+
+      _scheduleRender() {
+        if (this._renderPending) return;
+        this._renderPending = true;
+        setTimeout(() => {
+          this._renderPending = false;
+          if (typeof app !== 'undefined' && typeof app.refreshActiveScreen === 'function') {
+            app.refreshActiveScreen();
+          }
+        }, 250);
+      },
+
+      // Race a Promise against a timeout — used so bootstrap never hangs the UI forever
+      // on a flaky network. If timeout fires, retry on next app launch.
+      _withTimeout(promise, ms, label = 'op') {
+        return Promise.race([
+          promise,
+          new Promise((_, reject) => setTimeout(() => reject(new Error(`[cloud] ${label} timed out after ${ms}ms`)), ms)),
+        ]);
+      },
+
+      _updateBadge() {
+        const badge = document.getElementById('cloudBadge');
+        if (!badge) return;
+        if (this._connected) {
+          badge.textContent = '●';
+          badge.style.color = 'var(--accent-success)';
+          badge.title = 'Live sync — connected to Firebase';
+        } else {
+          badge.textContent = '○';
+          badge.style.color = 'var(--text-secondary)';
+          badge.title = 'Offline — changes will sync when reconnected';
         }
       },
     };
@@ -2380,6 +2603,28 @@
         this.applyUiPrefs();
         await pinLock.init();
         this._setAppBgForScreen(this.currentScreen || 'dashboardScreen');
+        // Start cloud sync in background — non-blocking, app already rendered
+        cloud.init(FIREBASE_CONFIG).catch(err => console.warn('[cloud] init failed:', err));
+      },
+
+      // Called by cloud sync when an inbound remote change has been written to IndexedDB.
+      // Re-renders whichever screen the user is currently looking at so they see the new data.
+      async refreshActiveScreen() {
+        const active = document.querySelector('.screen.active');
+        if (!active) return;
+        const renderers = {
+          dashboardScreen:    'renderDashboard',
+          sessionScreen:      'renderSessionScreen',
+          historyScreen:      'renderHistoryScreen',
+          carriesScreen:      'renderCarriesScreen',
+          floatScreen:        'renderFloatScreen',
+          playerStatsScreen:  'renderPlayerStats',
+          settlementScreen:   'renderSettlementScreen',
+        };
+        const fn = renderers[active.id];
+        if (fn && typeof this[fn] === 'function') {
+          try { await this[fn](); } catch(e) { console.warn('[cloud] re-render failed:', e); }
+        }
       },
 
       async cacheDerrickId() {
