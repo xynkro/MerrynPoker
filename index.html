@@ -1444,6 +1444,13 @@
       color: var(--text-secondary);
     }
 
+    /* Cash Out modal — dimmed source row when availability is near zero.
+       The label is muted but the input remains usable so the user can still
+       type into a low/empty source if they want (e.g. typing a value also
+       restores opacity via JS). */
+    [data-src-row].co-low-avail { opacity: 0.45; }
+    [data-src-row].co-low-avail input.alloc-src { opacity: 1; }
+
     /* Loading */
     .loading-spinner {
       display: inline-block;
@@ -4309,45 +4316,78 @@
           </div>`;
         }).join('');
 
+        // OPTION B — direction-aware modal layout.
+        //   • Compact header with inline cashout input + Net P/L
+        //   • Loser intro callout explaining auto-park (hidden until loser direction)
+        //   • "Paid by" block (winners only — peer counterparties are the headline)
+        //   • Sources block (Float Cash / USDT / Stash) — header label adapts:
+        //         winner+peers → "Or from"
+        //         loser        → "Optional — pay some now via"
+        //         neutral      → "Sources"
+        //   • Collapsible Notes (hidden by default unless already populated)
+        // Visibility toggling and low-availability dimming both live in
+        // _coAllocRecompute — it runs every time the cashout amount changes,
+        // so dimming reacts to settle-size dynamically (e.g. Stash $250 dims
+        // when settling $20K but stays full opacity when settling $1K).
+        const playerName = player?.name || '?';
+
         document.getElementById('modalBody').innerHTML = `
-          <div style="margin-bottom:12px; padding:10px 12px; background:var(--bg-tertiary); border-radius:10px; font-size:13px;">
-            <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-              <span style="color:var(--text-secondary);">Buy-in</span>
+          <!-- Compact header: Bought in $X  →  Cashout [input] / Net P/L -->
+          <div style="margin-bottom:12px; padding:10px 12px; background:var(--bg-tertiary); border-radius:10px;">
+            <div style="display:flex; align-items:center; gap:6px; font-size:13px;">
+              <span style="color:var(--text-secondary);">Bought in</span>
               <span style="font-weight:700;">$${fmt(totalBuyin)}</span>
+              <span style="color:var(--text-secondary); margin:0 4px;">→</span>
+              <span style="color:var(--text-secondary); flex:1;">Cashout</span>
+              <input type="text" inputmode="numeric" id="coAmount" placeholder=""
+                value="${initAmount > 0 ? fmt(initAmount) : ''}"
+                oninput="app._fmtCashoutAmount(this); app._updateCoNetPl(${totalBuyin}); app._coAllocRecompute();"
+                onclick="this.select()"
+                style="width:130px; padding:8px 10px; background:var(--bg-secondary); color:var(--text-primary);
+                       border:1px solid var(--border-color); border-radius:6px; font-size:18px; text-align:right;
+                       font-weight:700;">
             </div>
-            <div style="display:flex; justify-content:space-between;">
+            <div style="display:flex; justify-content:space-between; padding-top:8px; margin-top:8px;
+                        border-top:1px solid var(--border-color); font-size:13px;">
               <span style="color:var(--text-secondary);">Net P/L</span>
-              <span id="coNetPl" style="font-weight:700;">—</span>
+              <span id="coNetPl" style="font-weight:700; font-size:16px;">—</span>
             </div>
           </div>
 
-          <div class="form-group">
-            <label class="form-label">Cashout amount</label>
-            <input type="text" inputmode="numeric" id="coAmount" placeholder="0"
-              value="${initAmount > 0 ? fmt(initAmount) : ''}"
-              oninput="app._fmtCashoutAmount(this); app._updateCoNetPl(${totalBuyin}); app._coAllocRecompute();"
-              onclick="this.select()"
-              class="form-input"
-              style="font-size:24px; text-align:center; font-weight:700;">
+          <!-- Loser-only intro: explains auto-park behavior -->
+          <div id="coLoserIntro" style="display:none; margin-bottom:12px; padding:10px 12px;
+                                        background:rgba(255,107,107,0.08); border-left:3px solid var(--accent-danger);
+                                        border-radius:6px; font-size:12px; line-height:1.55; color:var(--text-secondary);">
+            The <span id="coLoserAmt" style="color:var(--text-primary); font-weight:700;">$0</span> loss will be parked as a carry. Players who record &ldquo;Paid by ${this._esc(playerName)}&rdquo; on their cashout will reduce it automatically.
           </div>
 
+          <!-- Counterparties block: winners only, "Paid by" prominent header -->
+          ${counterparties.length > 0 ? `
+          <div id="coCounterpartiesBlock" style="display:none; margin-bottom:12px;">
+            <div id="coOtherPlayersHeader" style="font-size:11px; color:var(--accent-success); margin-bottom:6px;
+                                                 font-weight:700; letter-spacing:0.4px; text-transform:uppercase;">
+              💰 Paid by
+            </div>
+            <div style="border:1px solid var(--border-color); border-radius:10px; padding:0 8px;">
+              ${counterpartiesHtml}
+            </div>
+          </div>` : ''}
+
+          <!-- Sources block: Float Cash / USDT / Stash. Label adapts per direction. -->
           <div style="margin-bottom:10px;">
-            <div style="font-size:12px; color:var(--text-secondary); margin-bottom:6px;">
-              <span id="coSettleLabel">Settle</span> <span id="coSettleAmt" style="font-weight:700;">$0</span> from:
+            <div id="coSourcesHeader" style="font-size:11px; color:var(--text-secondary); margin-bottom:6px;
+                                            font-weight:700; letter-spacing:0.4px; text-transform:uppercase;">
+              Sources
             </div>
-            <div style="border:1px solid var(--border-color); border-radius:10px; padding:6px 8px;">
-              ${counterparties.length > 0 ? `
-                <div id="coOtherPlayersHeader" style="display:none; font-size:11px; color:var(--text-secondary); padding:4px 0; font-weight:700; letter-spacing:0.4px; text-transform:uppercase;">👥 Other Players</div>
-                ${counterpartiesHtml}` : ''}
-              <div style="font-size:11px; color:var(--text-secondary); padding:8px 0 4px; font-weight:700; letter-spacing:0.4px; text-transform:uppercase;">Sources</div>
-              <div data-src-row data-src-type="float_sgd" data-cap="999999999"
+            <div style="border:1px solid var(--border-color); border-radius:10px; padding:0 8px;">
+              <div data-src-row data-src-type="float_sgd" data-cap="999999999" data-avail-sgd="${floatCash}"
                    style="display:flex; align-items:center; gap:8px; padding:7px 4px; border-bottom:1px solid var(--border-color);">
                 <span style="flex:1; font-size:13px;">🏦 Float (Cash) <span style="font-size:11px; color:var(--text-secondary);">$${fmt(floatCash)} avail</span></span>
                 <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
                   oninput="app._coAllocFmt(this)" onclick="this.select()"
                   style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
               </div>
-              <div data-src-row data-src-type="float_usdt" data-cap="999999999"
+              <div data-src-row data-src-type="float_usdt" data-cap="999999999" data-avail-sgd="${Math.round(floatUsdt * liveRate)}"
                    style="display:flex; align-items:center; gap:8px; padding:7px 4px; border-bottom:1px solid var(--border-color);">
                 <span style="flex:1; font-size:13px;">🔶 Float (USDT @${liveRate.toFixed(4)} <span style="font-size:11px; color:var(--accent-success);">live</span>)
                   <span style="font-size:11px; color:var(--text-secondary); margin-left:4px;">${floatUsdt.toFixed(2)}T avail</span></span>
@@ -4355,7 +4395,7 @@
                   oninput="app._coAllocFmt(this)" onclick="this.select()"
                   style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
               </div>
-              <div data-src-row data-src-type="stash" data-cap="999999999"
+              <div data-src-row data-src-type="stash" data-cap="999999999" data-avail-sgd="${stashTotal}"
                    style="display:flex; align-items:center; gap:8px; padding:7px 4px;">
                 <span style="flex:1; font-size:13px;">🃏 Dealer Stash <span style="font-size:11px; color:var(--text-secondary);">$${fmt(stashTotal)} avail</span></span>
                 <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
@@ -4366,10 +4406,18 @@
             <div id="coAllocStatus" style="margin-top:8px; text-align:center; font-weight:700; font-size:13px; min-height:18px;"></div>
           </div>
 
-          <div class="form-group">
-            <label class="form-label">Notes (optional)</label>
+          <!-- Collapsible Notes — hidden by default unless already populated -->
+          <div style="margin-bottom:8px;">
+            <button type="button" id="coNotesToggle" onclick="app._coToggleNotes()"
+              style="width:100%; display:flex; align-items:center; justify-content:space-between; padding:9px 12px;
+                     background:transparent; border:1px solid var(--border-color); border-radius:8px;
+                     color:var(--text-secondary); font-size:13px; cursor:pointer;">
+              <span><span id="coNotesArrow">${initNotes ? '▾' : '▸'}</span> Notes${initNotes ? ' <span style="color:var(--accent-success); margin-left:4px;">●</span>' : ''}</span>
+              <span style="font-size:11px; opacity:0.6;">${initNotes ? '' : 'optional'}</span>
+            </button>
             <textarea id="coNotes" placeholder="e.g. paid via Sam + Wayne, USDT swap"
-              style="width:100%; min-height:50px; padding:10px; background:var(--bg-tertiary); color:var(--text-primary);
+              style="display:${initNotes ? 'block' : 'none'}; width:100%; min-height:50px; padding:10px; margin-top:8px;
+                     background:var(--bg-tertiary); color:var(--text-primary);
                      border:1px solid var(--border-color); border-radius:8px; font-size:14px; resize:vertical; font-family:inherit;">${this._esc(initNotes)}</textarea>
           </div>
         `;
@@ -4421,14 +4469,52 @@
           row.style.display = visible ? 'flex' : 'none';
           if (visible) visibleCounterparties++;
         });
-        const header = document.getElementById('coOtherPlayersHeader');
-        if (header) header.style.display = visibleCounterparties > 0 ? '' : 'none';
 
-        const settleLabelEl = document.getElementById('coSettleLabel');
-        if (settleLabelEl) {
-          settleLabelEl.textContent = netPl > 0 ? 'Pay' : (netPl < 0 ? 'Settle' : '');
+        // Option B: toggle the wrapped "Paid by" block (winners only) and the
+        // loser intro callout. Both are no-ops if cashout not entered yet.
+        const cpBlock = document.getElementById('coCounterpartiesBlock');
+        if (cpBlock) cpBlock.style.display = (cashoutEntered && visibleCounterparties > 0) ? '' : 'none';
+
+        const loserIntro = document.getElementById('coLoserIntro');
+        const loserAmtEl = document.getElementById('coLoserAmt');
+        const isLoser = direction === 'loser';
+        if (loserIntro) loserIntro.style.display = (cashoutEntered && isLoser) ? '' : 'none';
+        if (loserAmtEl) loserAmtEl.textContent = `$${settle.toLocaleString()}`;
+
+        // Sources header label adapts to direction:
+        //   winner with peers → "Or from"      (sources demoted below counterparties)
+        //   loser             → "Optional — pay some now via"
+        //   neutral / no-cashout-yet → "Sources"
+        const sourcesHeader = document.getElementById('coSourcesHeader');
+        if (sourcesHeader) {
+          if (cashoutEntered && direction === 'winner' && visibleCounterparties > 0) {
+            sourcesHeader.textContent = 'Or from';
+          } else if (cashoutEntered && isLoser) {
+            sourcesHeader.textContent = 'Optional — pay some now via';
+          } else {
+            sourcesHeader.textContent = 'Sources';
+          }
         }
-        document.getElementById('coSettleAmt').textContent = `$${settle.toLocaleString()}`;
+
+        // Dynamic low-availability dimming on Float Cash / USDT / Stash rows.
+        // A source is "low" when:
+        //   • avail = 0 (always dim), OR
+        //   • settle > 0 AND avail < 10% of the settlement amount
+        // The input itself stays usable (CSS keeps opacity:1 on input.alloc-src)
+        // so power users can still type if Sarah really wants to drain a near-empty source.
+        document.querySelectorAll('[data-src-row][data-avail-sgd]').forEach(row => {
+          const avail = parseFloat(row.dataset.availSgd) || 0;
+          const typed = this._coReadAllocAmt(row.querySelector('input.alloc-src'));
+          let isLow = false;
+          if (typed > 0) {
+            isLow = false; // user is engaging this source — keep it full opacity
+          } else if (avail <= 0) {
+            isLow = true;
+          } else if (settle > 0 && avail < settle * 0.1) {
+            isLow = true;
+          }
+          row.classList.toggle('co-low-avail', isLow);
+        });
 
         let allocated = 0;
         document.querySelectorAll('[data-src-row]').forEach(row => {
@@ -4493,6 +4579,18 @@
       _fmtCashoutAmount(input) {
         const raw = (input.value || '').replace(/[^0-9]/g, '');
         input.value = raw ? parseInt(raw).toLocaleString() : '';
+      },
+
+      // Cash Out modal — toggle the collapsible Notes textarea. Opens with focus
+      // so iOS keyboard pops immediately. Arrow indicator flips ▸ ↔ ▾.
+      _coToggleNotes() {
+        const ta = document.getElementById('coNotes');
+        const arrow = document.getElementById('coNotesArrow');
+        if (!ta) return;
+        const isOpen = ta.style.display !== 'none';
+        ta.style.display = isOpen ? 'none' : 'block';
+        if (arrow) arrow.textContent = isOpen ? '▸' : '▾';
+        if (!isOpen) setTimeout(() => ta.focus(), 50);
       },
 
       _coReadAmt(id) {
