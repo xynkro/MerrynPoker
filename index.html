@@ -4099,18 +4099,7 @@
           // Settlement summary block (only shown once cashed out)
           let settlementHtml = '';
           if (isCashedOut) {
-            // Method labels reflect current flows. Legacy labels (pot / mixed /
-            // other_players / cash) are kept so historical entries still render.
-            const methodLabels = {
-              allocated:     '🤝 Multi-source',
-              fully_settled: '✓ Settled outside app',
-              uncleared:     '📋 Parked as carry',
-              cash:          '💵 Cash',
-              pot:           '🃏 Pot',
-              other_players: '👥 Other Players',
-              mixed:         '⚖️ Mixed',
-            };
-            const methodLabel = methodLabels[entry.settlement_method] || (entry.settlement_method ? entry.settlement_method : '—');
+            const methodLabel = this._settlementMethodLabel(entry.settlement_method) || '—';
             const netPlA = entry.cash_out - totalBuyin;
             const rawPaid = entry.paid_amount ?? Math.max(0, Math.abs(netPlA));
             // Cap the paid amount at the absolute net P/L on either side so we
@@ -8020,7 +8009,7 @@
               <div style="font-size: 12px; color: var(--text-secondary); display: flex; gap: 12px; flex-wrap: wrap;">
                 ${!isDealer ? `<span>B/I: $${totalBI.toLocaleString()} (${buyIns.length}x)</span>` : ''}
                 <span>C/O: $${(entry.cash_out || 0).toLocaleString()}</span>
-                ${entry.settlement_method ? `<span>${entry.settlement_method}</span>` : ''}
+                ${entry.settlement_method ? `<span>${this._settlementMethodLabel(entry.settlement_method)}</span>` : ''}
               </div>
             </div>
           `;
@@ -9419,6 +9408,24 @@
 
       _esc(s) {
         return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      },
+
+      // Friendly label for an entry's `settlement_method` slug.
+      // Single source of truth — used by Player Action sheet, Cash Out tab,
+      // Session Detail card, and any future caller. Falls back to the raw
+      // slug for unknown values so historic / experimental rows still render.
+      _settlementMethodLabel(method) {
+        if (!method) return '';
+        const labels = {
+          allocated:     '🤝 Multi-source',
+          fully_settled: '✓ Settled outside app',
+          uncleared:     '📋 Parked as carry',
+          cash:          '💵 Cash',
+          pot:           '🃏 Pot',
+          other_players: '👥 Other Players',
+          mixed:         '⚖️ Mixed',
+        };
+        return labels[method] || method;
       },
 
       async saveMyName() {
