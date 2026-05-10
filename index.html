@@ -3924,7 +3924,7 @@
                 </div>
                 <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
                   ${isCashedOut
-                    ? `<span style="font-size: 12px; color: var(--text-secondary);">Cashed ✓</span>`
+                    ? `<span style="font-size: 14px; font-weight: 800; color: ${netPl >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)'};">${netPl >= 0 ? '+' : ''}$${netPl.toLocaleString()}</span>`
                     : `<span style="color: var(--accent-warning); font-size: 11px;">● in play</span>`
                   }
                 </div>
