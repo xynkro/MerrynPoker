@@ -5,7 +5,7 @@
 //   • Static assets (icons, bg images, manifest) → CACHE-FIRST.
 //   • Cross-origin (Apps Script, Sheets API) → never intercepted.
 
-const CACHE = 'merryn-v24';
+const CACHE = 'merryn-v25';
 
 const STATIC_ASSETS = [
   'manifest.json',

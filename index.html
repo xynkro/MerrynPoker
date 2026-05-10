@@ -4356,25 +4356,14 @@
                   style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
               </div>
               <div data-src-row data-src-type="stash" data-cap="999999999"
-                   style="display:flex; align-items:center; gap:8px; padding:7px 4px; border-bottom:1px solid var(--border-color);">
+                   style="display:flex; align-items:center; gap:8px; padding:7px 4px;">
                 <span style="flex:1; font-size:13px;">🃏 Dealer Stash <span style="font-size:11px; color:var(--text-secondary);">$${fmt(stashTotal)} avail</span></span>
                 <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
                   oninput="app._coAllocFmt(this)" onclick="this.select()"
                   style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
               </div>
-              <div data-src-row data-src-type="park" data-cap="999999999"
-                   style="display:flex; align-items:center; gap:8px; padding:7px 4px;">
-                <span style="flex:1; font-size:13px;">📋 Park as carry <span style="font-size:11px; color:var(--text-secondary);">→ Carries tab</span></span>
-                <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
-                  oninput="app._coAllocFmt(this)" onclick="this.select()"
-                  style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--accent-warning); border:1px dashed rgba(255,217,61,0.55); border-radius:6px; font-size:14px; text-align:right; font-weight:700;">
-              </div>
             </div>
             <div id="coAllocStatus" style="margin-top:8px; text-align:center; font-weight:700; font-size:13px; min-height:18px;"></div>
-            <div id="coAllocActions" style="display:none; margin-top:6px;">
-              <button type="button" id="coParkRemainder" onclick="app._coParkRemainder()"
-                style="width:100%; padding:9px; background:var(--accent-warning)18; border:1px dashed var(--accent-warning)55; color:var(--accent-warning); border-radius:8px; font-size:12px; font-weight:700; cursor:pointer;">📋 Park remainder as carry</button>
-            </div>
           </div>
 
           <div class="form-group">
@@ -4386,9 +4375,10 @@
         `;
 
         document.getElementById('modalFooter').innerHTML = `
-          ${isEditing ? `<button class="btn btn-danger" onclick="app.cancelCashout('${entryId}')" style="flex:0 0 auto; padding:11px 12px;">Cancel CO</button>` : ''}
-          <button class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
-          <button class="btn btn-primary" id="coConfirm" onclick="app.commitCashout('${entryId}', ${totalBuyin})" disabled>${isEditing ? 'Save' : 'Cash Out'}</button>
+          ${isEditing ? `<button class="btn btn-danger" onclick="app.cancelCashout('${entryId}')" style="flex:0 0 auto; padding:9px 10px; font-size:12px;">Cancel CO</button>` : ''}
+          <button class="btn btn-secondary" onclick="app.closeModal()" style="padding:9px 10px; font-size:13px;">Cancel</button>
+          <button class="btn btn-secondary" id="coFullySettled" onclick="app.commitCashout('${entryId}', ${totalBuyin}, true)" style="padding:9px 10px; font-size:12px; background:var(--accent-success)18; color:var(--accent-success); border:1px solid var(--accent-success)55;" disabled title="Save without creating a carry — loss/winnings are settled outside this app">✓ Fully Settled</button>
+          <button class="btn btn-primary" id="coConfirm" onclick="app.commitCashout('${entryId}', ${totalBuyin}, false)" disabled style="padding:9px 12px; font-size:13px;">${isEditing ? 'Save' : 'Cash Out'}</button>
         `;
 
         modal.classList.add('show');
@@ -4408,7 +4398,6 @@
       },
 
       _coAllocRecompute() {
-        // Use the raw input value to distinguish "untyped" from "explicit 0".
         const co = document.getElementById('coAmount');
         const cashoutRaw = (co?.value || '').trim();
         const cashoutEntered = cashoutRaw !== '';
@@ -4418,12 +4407,17 @@
         const settle = Math.abs(netPl);
         const direction = netPl > 0 ? 'winner' : (netPl < 0 ? 'loser' : '');
 
-        // Toggle counterparty rows based on direction. Hide all until the
-        // dealer has actually entered a cashout amount (avoids the confusing
-        // case of showing eligible peers before the direction is known).
+        // Counterparty rows (peer payments). Per the user's mental model, peer
+        // payments only happen on the WINNER's cashout. So losers don't see a
+        // counterparty list — their loss either gets paid out via Float/Stash
+        // here, or auto-parks as a carry that other players can settle by
+        // recording "Paid by [loser]" on their own cashout.
+        // showWhen attribute: 'winner' = show when current is winning (these are
+        // loser counterparties who paid them); 'loser' = vice versa (unused).
+        const showCounterparties = direction === 'winner';
         let visibleCounterparties = 0;
         document.querySelectorAll('[data-show-when]').forEach(row => {
-          const visible = cashoutEntered && !!direction && row.dataset.showWhen === direction;
+          const visible = cashoutEntered && showCounterparties && row.dataset.showWhen === direction;
           row.style.display = visible ? 'flex' : 'none';
           if (visible) visibleCounterparties++;
         });
@@ -4431,45 +4425,51 @@
         if (header) header.style.display = visibleCounterparties > 0 ? '' : 'none';
 
         const settleLabelEl = document.getElementById('coSettleLabel');
-        if (settleLabelEl) settleLabelEl.textContent = netPl >= 0 ? 'Pay' : 'Collect';
+        if (settleLabelEl) {
+          settleLabelEl.textContent = netPl > 0 ? 'Pay' : (netPl < 0 ? 'Settle' : '');
+        }
         document.getElementById('coSettleAmt').textContent = `$${settle.toLocaleString()}`;
 
         let allocated = 0;
         document.querySelectorAll('[data-src-row]').forEach(row => {
-          // Hidden rows don't count (their value shouldn't apply when wrong direction)
           if (row.style.display === 'none') return;
           allocated += this._coReadAllocAmt(row.querySelector('input.alloc-src'));
         });
 
         const status = document.getElementById('coAllocStatus');
         const confirm = document.getElementById('coConfirm');
-        const actions = document.getElementById('coAllocActions');
+        const fully = document.getElementById('coFullySettled');
         const remaining = settle - allocated;
 
         if (!cashoutEntered) {
           if (status) { status.textContent = 'Enter a cashout amount above'; status.style.color = 'var(--text-secondary)'; }
           if (confirm) confirm.disabled = true;
-          if (actions) actions.style.display = 'none';
+          if (fully) fully.disabled = true;
           return;
         }
         if (settle === 0) {
           if (status) { status.textContent = '✓ Break-even — no allocation needed'; status.style.color = 'var(--accent-success)'; }
           if (confirm) confirm.disabled = false;
-          if (actions) actions.style.display = 'none';
+          if (fully) fully.disabled = false;
           return;
         }
         if (remaining > 0) {
-          if (status) { status.textContent = `Need $${remaining.toLocaleString()} more`; status.style.color = 'var(--accent-warning)'; }
-          if (confirm) confirm.disabled = true;
-          if (actions) actions.style.display = '';
+          // Cash Out auto-parks the remainder as a carry. Status hint reflects that.
+          if (status) {
+            const verb = netPl < 0 ? 'owes' : 'is owed';
+            status.textContent = `$${remaining.toLocaleString()} will be parked as a carry (${this._esc((app._coAlloc?.entryId && document.getElementById('modalTitle')?.textContent.split('—')[1]?.trim()) || 'player')} ${verb})`;
+            status.style.color = 'var(--accent-warning)';
+          }
+          if (confirm) confirm.disabled = false; // auto-parks remainder on save
+          if (fully) fully.disabled = false;     // can also click Fully Settled to skip carry
         } else if (remaining === 0) {
           if (status) { status.textContent = '✓ Fully allocated'; status.style.color = 'var(--accent-success)'; }
           if (confirm) confirm.disabled = false;
-          if (actions) actions.style.display = 'none';
+          if (fully) fully.disabled = false;
         } else {
           if (status) { status.textContent = `⚠ Over by $${Math.abs(remaining).toLocaleString()}`; status.style.color = 'var(--accent-danger)'; }
           if (confirm) confirm.disabled = true;
-          if (actions) actions.style.display = 'none';
+          if (fully) fully.disabled = true;
         }
       },
 
@@ -4602,10 +4602,15 @@
         }
       },
 
-      // Commit a multi-source cashout. Reads source-row inputs (loser tablePayments,
-      // float SGD/USDT, dealer stash, park-as-carry) and writes appropriate records.
-      // Direction (pay vs collect) follows net P/L sign.
-      async commitCashout(entryId, buyin) {
+      // Commit a multi-source cashout. Reads source-row inputs (peer
+      // tablePayments, float SGD/USDT, dealer stash) and writes appropriate
+      // records. Direction (pay vs collect) follows net P/L sign.
+      // Any unallocated remainder auto-parks as a carry — UNLESS fullySettled
+      // is true, in which case we skip the carry (loss/winnings handled
+      // outside the app).
+      // When this winner records peer-payments from losers, each loser's open
+      // session-linked carry is auto-reduced by that amount.
+      async commitCashout(entryId, buyin, fullySettled = false) {
         const cashout = this._coReadAmt('coAmount');
         if (cashout < 0) return;
         const notes = (document.getElementById('coNotes')?.value || '').trim();
@@ -4653,7 +4658,9 @@
           if (type === 'paid_by_loser' || type === 'pay_winner') {
             // Peer-to-peer payment direction depends on counterparty's role.
             // paid_by_loser: counterparty (loser) → current (winner)
-            // pay_winner:    current (loser) → counterparty (winner)
+            // pay_winner:    current (loser) → counterparty (winner) — unused now,
+            //                 since losers don't show counterparty rows. Kept for
+            //                 backward compat / future-proofing.
             const counterName = (app._coAlloc?.counterparties || []).find(c => c.playerId === id)?.name || '?';
             const fromId = type === 'paid_by_loser' ? id : winnerId;
             const toId   = type === 'paid_by_loser' ? winnerId : id;
@@ -4672,6 +4679,9 @@
               updated_at: now,
               deleted_at: null,
             });
+            // If the FROM side is a loser with an open session-linked carry,
+            // reduce it by the amount. When carry hits zero, mark cleared.
+            await this._reduceLoserCarryBy(fromId, session.id, amt);
           } else if (type === 'float_sgd') {
             await db.put('floatTransactions', {
               id: crypto.randomUUID(),
@@ -4713,32 +4723,46 @@
               updated_at: now,
               deleted_at: null,
             });
-          } else if (type === 'park') {
-            // Park unsettled portion as a carry (signed by win/loss direction)
-            const carryId = crypto.randomUUID();
-            await db.put('carryBalances', {
-              id: carryId,
-              player_id: winnerId,
-              amount_sgd: isWin ? amt : -amt,
-              origin_session_id: session.id,
-              origin_entry_id: entryId,
-              status: 'open',
-              cleared_at: null,
-              cleared_via: null,
-              rate_used: null,
-              usdt_amount: null,
-              note: `Parked from session ${new Date(session.date).toLocaleDateString('en-GB', { day:'numeric', month:'short' })} — ${playerName}`,
-              updated_at: now,
-              deleted_at: null,
-            });
-            entry.linked_carry_id = carryId;
           }
+        }
+
+        // Auto-park any remainder as a carry (unless Fully Settled was clicked).
+        // Also reduce by sum of existing tablePayments from this player so a
+        // winner who already recorded "Paid by Darren $X" before Darren cashed
+        // out doesn't end up double-counting.
+        const settle = Math.abs(netPl);
+        const existingPmtsFromMe = (await db.getAll('tablePayments'))
+          .filter(tp => tp.session_id === session.id && tp.from_player_id === winnerId && tp.from_source === 'player' && !tp.deleted_at)
+          .reduce((s, tp) => s + tp.amount, 0);
+        const existingPmtsToMe = (await db.getAll('tablePayments'))
+          .filter(tp => tp.session_id === session.id && tp.to_player_id === winnerId && !tp.deleted_at)
+          .reduce((s, tp) => s + tp.amount, 0);
+        const alreadyOffset = isWin ? existingPmtsToMe : existingPmtsFromMe;
+        const remainder = Math.max(0, settle - totalAllocated - alreadyOffset);
+        if (!fullySettled && netPl !== 0 && remainder > 0) {
+          const carryId = crypto.randomUUID();
+          await db.put('carryBalances', {
+            id: carryId,
+            player_id: winnerId,
+            amount_sgd: isWin ? remainder : -remainder,
+            origin_session_id: session.id,
+            origin_entry_id: entryId,
+            status: 'open',
+            cleared_at: null,
+            cleared_via: null,
+            rate_used: null,
+            usdt_amount: null,
+            note: `Parked from session ${new Date(session.date).toLocaleDateString('en-GB', { day:'numeric', month:'short' })} — ${playerName}`,
+            updated_at: now,
+            deleted_at: null,
+          });
+          entry.linked_carry_id = carryId;
         }
 
         // Update entry
         entry.cash_out          = cashout;
         entry.net_pl            = netPl;
-        entry.settlement_method = totalAllocated === 0 ? null : 'allocated';
+        entry.settlement_method = fullySettled ? 'fully_settled' : (totalAllocated === 0 && remainder === 0 ? null : 'allocated');
         entry.paid_amount       = totalAllocated;
         entry.notes             = notes || null;
         entry.updated_at        = now;
@@ -4746,8 +4770,43 @@
 
         this.closeModal();
         this.renderSessionScreen();
-        this.showUndoToast(entry.linked_carry_id ? 'Cashout saved · remainder added to Carries' : 'Cashout saved');
+        const toastMsg = fullySettled
+          ? '✓ Fully settled — no carry'
+          : (entry.linked_carry_id ? `Cashout saved · $${remainder.toLocaleString()} parked as carry` : 'Cashout saved');
+        this.showUndoToast(toastMsg);
         this.autoSync();
+      },
+
+      // Reduce a (loser) player's open session-linked carry by `amt`. Called
+      // from commitCashout when a winner records a peer payment from this loser.
+      async _reduceLoserCarryBy(playerId, sessionId, amt) {
+        if (!playerId || !sessionId || amt <= 0) return;
+        const carries = (await db.getAll('carryBalances')).filter(c =>
+          c.player_id === playerId &&
+          c.origin_session_id === sessionId &&
+          c.status === 'open' &&
+          c.amount_sgd < 0 &&
+          !c.deleted_at);
+        if (carries.length === 0) return;
+        // Reduce the largest-magnitude debt first
+        carries.sort((a, b) => a.amount_sgd - b.amount_sgd); // most negative first
+        let toApply = amt;
+        const now = new Date().toISOString();
+        for (const c of carries) {
+          if (toApply <= 0) break;
+          const debt = Math.abs(c.amount_sgd);
+          const applied = Math.min(debt, toApply);
+          c.amount_sgd += applied; // less negative → toward 0
+          if (Math.abs(c.amount_sgd) < 0.01) {
+            c.status = 'cleared';
+            c.cleared_at = now;
+            c.cleared_via = 'peer-payment';
+          }
+          c.note = (c.note || '') + ` · $${applied.toLocaleString()} settled via peer payment`;
+          c.updated_at = now;
+          await db.put('carryBalances', c);
+          toApply -= applied;
+        }
       },
 
       // Mutates entry.linked_carry_id. Called from commitCashout and undoCashOut.
