@@ -2698,6 +2698,7 @@
             rate_used: null,
             usdt_amount: null,
             note: 'To clear with Derrick',
+            created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
             deleted_at: null,
           });
@@ -2768,6 +2769,7 @@
               rate_used: null,
               usdt_amount: null,
               note: carry.note,
+              created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
               deleted_at: null,
             });
@@ -3632,7 +3634,10 @@
 
         for (const carry of sorted) {
           const player = players.find(p => p.id === carry.player_id);
-          const age = Math.floor((Date.now() - new Date(carry.updated_at)) / (1000 * 60 * 60 * 24));
+          // Prefer created_at so partial settlements don't reset the carry's
+          // visible age — fall back to updated_at for legacy rows that pre-date
+          // the created_at field.
+          const age = Math.floor((Date.now() - new Date(carry.created_at || carry.updated_at)) / (1000 * 60 * 60 * 24));
           const isOld = age > 30;
 
           const card = document.createElement('div');
@@ -4877,6 +4882,7 @@
             rate_used: null,
             usdt_amount: null,
             note: `Parked from session ${new Date(session.date).toLocaleDateString('en-GB', { day:'numeric', month:'short' })} — ${playerName}`,
+            created_at: now,
             updated_at: now,
             deleted_at: null,
           });
@@ -5432,6 +5438,7 @@
               rate_used: null,
               usdt_amount: null,
               note: `Allocated from ${(this._allocator?.carries || []).find(c => c.id === id)?.name || '?'}'s carry — settle via Carries tab`,
+              created_at: now,
               updated_at: now,
               deleted_at: null,
             });
@@ -5449,6 +5456,7 @@
               rate_used: null,
               usdt_amount: null,
               note: `Parked from session ${new Date(session.date).toLocaleDateString('en-GB', { day:'numeric', month:'short' })} — allocator`,
+              created_at: now,
               updated_at: now,
               deleted_at: null,
             });
@@ -6842,6 +6850,7 @@
               rate_used: null,
               usdt_amount: null,
               note: `Parked from ${new Date(session.date).toLocaleDateString()}`,
+              created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
               deleted_at: null,
             });
@@ -8278,7 +8287,8 @@
           const canDeleteCarry = this.isDealer();
           openCarries.sort((a, b) => Math.abs(b.amount_sgd) - Math.abs(a.amount_sgd)).forEach(carry => {
             const player = players.find(p => p.id === carry.player_id);
-            const daysAgo = Math.floor((Date.now() - new Date(carry.updated_at)) / (1000 * 60 * 60 * 24));
+            // Prefer created_at — see dashboard renderer for rationale.
+            const daysAgo = Math.floor((Date.now() - new Date(carry.created_at || carry.updated_at)) / (1000 * 60 * 60 * 24));
             // Cache carry for detail modal access
             if (!app._carryCache) app._carryCache = {};
             app._carryCache[carry.id] = carry;
