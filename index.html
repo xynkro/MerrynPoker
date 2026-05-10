@@ -3992,8 +3992,11 @@
               const netPl = entry.cash_out - totalBuyin;
               const roleBadge = player?.role === 'bank' ? ' 🏦' : '';
               const methodIcon = entry.settlement_method ? (methodIcons[entry.settlement_method] || '·') : '';
-              const paid = entry.paid_amount ?? entry.cash_out;
-              const balance = entry.cash_out - paid;
+              // Balance = remaining net P/L still owed (winner) or still owing (loser).
+              // paid_amount stores net winnings paid; legacy gross values are clamped to netPl.
+              const rawPaid = entry.paid_amount ?? Math.max(0, netPl);
+              const paid = (netPl > 0 && rawPaid > netPl) ? netPl : rawPaid;
+              const balance = netPl > 0 ? (netPl - paid) : (netPl < 0 ? -(Math.abs(netPl) - paid) : 0);
               const balanceHint = balance !== 0 ? ` · Bal $${Math.abs(balance).toLocaleString()}` : '';
               const editable = isActive && this.isDealer();
               html += `
@@ -4085,8 +4088,10 @@
           if (isCashedOut) {
             const methodLabels = { pot: '🃏 Pot', cash: '💵 Cash', other_players: '👥 Other Players', mixed: '⚖️ Mixed', uncleared: '📋 Uncleared (carry)' };
             const methodLabel = methodLabels[entry.settlement_method] || (entry.settlement_method ? entry.settlement_method : '—');
-            const paid = entry.paid_amount ?? entry.cash_out;
-            const balance = entry.cash_out - paid;
+            const netPlA = entry.cash_out - totalBuyin;
+            const rawPaid = entry.paid_amount ?? Math.max(0, netPlA);
+            const paid = (netPlA > 0 && rawPaid > netPlA) ? netPlA : rawPaid;
+            const balance = netPlA > 0 ? (netPlA - paid) : (netPlA < 0 ? -(Math.abs(netPlA) - paid) : 0);
             settlementHtml = `
               <div style="display:flex; justify-content:space-between; margin-top:4px;">
                 <span style="font-size:12px; font-weight:700;">Cash out</span>
@@ -4222,9 +4227,25 @@
         const isEditing = entry.cash_out !== null && entry.cash_out !== undefined;
 
         const initAmount = isEditing ? entry.cash_out : 0;
-        const initPaid   = entry.paid_amount ?? initAmount;
+        // 'Paid now' is the NET winnings paid to the player (above their buy-in return).
+        // For a new winner that's the net P/L; for a loser it's 0. Existing entries
+        // that were saved under the old gross-paid model are auto-detected and treated
+        // as if their net pay-out was max(0, paid_amount - buyin) so balance still
+        // makes sense — see commitCashout for the reverse migration on save.
+        let initPaid;
+        if (entry.paid_amount !== undefined && entry.paid_amount !== null) {
+          // Heuristic: if stored value is suspiciously close to gross cashout but the
+          // player's a winner, interpret it as legacy gross. Otherwise trust as-is.
+          const netPl = initAmount - totalBuyin;
+          initPaid = (netPl > 0 && entry.paid_amount > netPl) ? netPl : entry.paid_amount;
+        } else {
+          initPaid = Math.max(0, initAmount - totalBuyin);
+        }
         const initMethod = entry.settlement_method || '';
         const initNotes  = entry.notes || '';
+
+        // Stash for _updateCoBalance — read via app._coBuyin
+        app._coBuyin = totalBuyin;
 
         this.closeActionSheet();
         const modal = document.getElementById('modal');
@@ -4274,7 +4295,7 @@
           </div>
 
           <div class="form-group">
-            <label class="form-label">Paid now <span style="color:var(--text-secondary); font-weight:400; font-size:11px;">(defaults to full cashout)</span></label>
+            <label class="form-label">Paid now <span style="color:var(--text-secondary); font-weight:400; font-size:11px;">(net winnings paid; defaults to full P/L)</span></label>
             <input type="text" inputmode="numeric" id="coPaid" placeholder="$0"
               value="${initPaid > 0 ? initPaid.toLocaleString() : ''}"
               oninput="app._fmtCashoutAmount(this); app._updateCoBalance();"
@@ -4334,24 +4355,45 @@
       _updateCoBalance() {
         const amount = this._coReadAmt('coAmount');
         const paid   = this._coReadAmt('coPaid');
+        const buyin  = app._coBuyin || 0;
+        const netPl  = amount - buyin;
         const el = document.getElementById('coBalance');
         if (!el) return;
         const sel = document.querySelector('#modalBody [data-method][data-selected]');
         const method = sel?.dataset.method;
 
-        if (paid === 0 && amount === 0) { el.textContent = ''; return; }
+        if (amount === 0) { el.textContent = ''; return; }
 
-        // For 'uncleared' nothing is paid — full amount is the carry
+        // Uncleared: the entire net P/L becomes a carry, no payment was made.
         if (method === 'uncleared') {
-          if (amount === 0) { el.textContent = ''; return; }
-          el.textContent = `Carry: $${amount.toLocaleString()} → Carries tab`;
+          if (netPl === 0) { el.textContent = '✓ Break-even — no carry'; el.style.color = 'var(--accent-success)'; return; }
+          const sign = netPl > 0 ? '+' : '−';
+          el.textContent = `Carry: ${sign}$${Math.abs(netPl).toLocaleString()} → Carries tab`;
           el.style.color = 'var(--accent-warning)';
           return;
         }
 
-        // Otherwise: blank paid = paid in full
-        const effectivePaid = paid === 0 ? amount : paid;
-        const bal = amount - effectivePaid;
+        // Net P/L is the canonical "what's owed". Paid is what's actually been
+        // handed over (net of buy-in return). Balance = netPl − paid.
+        if (netPl === 0) {
+          el.textContent = '✓ Break-even';
+          el.style.color = 'var(--accent-success)';
+          return;
+        }
+        if (netPl < 0) {
+          // Player lost. paid here represents loss recovered from them.
+          const stillOwes = Math.abs(netPl) - paid;
+          if (stillOwes <= 0) {
+            el.textContent = '✓ Loss settled';
+            el.style.color = 'var(--accent-success)';
+          } else {
+            el.textContent = `Player still owes: $${stillOwes.toLocaleString()}`;
+            el.style.color = 'var(--accent-danger)';
+          }
+          return;
+        }
+        // Winner
+        const bal = netPl - paid;
         if (bal === 0) {
           el.textContent = '✓ Settled in full';
           el.style.color = 'var(--accent-success)';
@@ -4381,6 +4423,9 @@
           }
           delete b.dataset.selected;
         });
+        // Mark this button selected BEFORE any _updateCoBalance call so the
+        // selector inside that helper finds the new method.
+        btn.dataset.selected = '1';
         if (isUncleared) {
           btn.style.background = 'rgba(255,217,61,0.18)';
           btn.style.borderStyle = 'solid';
@@ -4394,8 +4439,8 @@
           btn.style.background = 'rgba(78,204,163,0.18)';
           btn.style.borderColor = 'rgba(78,204,163,0.55)';
           btn.style.color = 'var(--accent-success)';
+          this._updateCoBalance();
         }
-        btn.dataset.selected = '1';
       },
 
       async commitCashout(entryId, buyin) {
@@ -4422,7 +4467,9 @@
         entry.cash_out          = amount;
         entry.net_pl            = amount - buyin;
         entry.settlement_method = method;
-        entry.paid_amount       = method === 'uncleared' ? 0 : (paid > 0 ? paid : amount);
+        // paid_amount = net winnings actually handed over (above buy-in return).
+        // Uncleared = nothing paid. Blank input = default to full net P/L (settled).
+        entry.paid_amount       = method === 'uncleared' ? 0 : (paid > 0 ? paid : Math.max(0, amount - buyin));
         entry.notes             = notes || null;
         entry.updated_at        = new Date().toISOString();
 
