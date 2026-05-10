@@ -8041,9 +8041,10 @@
           for (const c of carries) {
             const cPlayer = players.find(p => p.id === c.player_id);
             html += `
-              <div style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; margin-bottom: 8px; font-size: 14px; display: flex; justify-content: space-between;">
-                <span>${cPlayer?.name || '?'} · <span style="color: ${c.status === 'cleared' ? 'var(--accent-success)' : 'var(--accent-warning)'};">${c.status}</span></span>
-                <span style="color: ${c.amount_sgd > 0 ? 'var(--accent-success)' : 'var(--accent-danger)'}; font-weight: 600;">
+              <div style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; margin-bottom: 8px; font-size: 14px; display: flex; justify-content: space-between; align-items:center; gap:8px;">
+                <span style="min-width:0; flex:1;">${cPlayer?.name || '?'}</span>
+                <span style="font-size:11px; padding:2px 8px; border-radius:10px; font-weight:700; background: ${c.status === 'cleared' ? 'var(--accent-success)' : 'var(--accent-warning)'}22; color: ${c.status === 'cleared' ? 'var(--accent-success)' : 'var(--accent-warning)'};">${c.status === 'cleared' ? '✓ Cleared' : '⏳ Open'}</span>
+                <span style="color: ${c.amount_sgd > 0 ? 'var(--accent-success)' : 'var(--accent-danger)'}; font-weight: 700;">
                   ${c.amount_sgd > 0 ? '+' : ''}$${Math.abs(c.amount_sgd).toLocaleString()}
                 </span>
               </div>
