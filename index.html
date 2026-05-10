@@ -8304,20 +8304,30 @@
                 </div>
               </div>
               <div id="carryActions_${carry.id}" style="display: flex; gap: 0; border-radius: 0 0 12px 12px; overflow: hidden; border: 1px solid var(--border-color); border-top: none;">
-                <button onclick="event.stopPropagation(); app.showCarryAllocator('${carry.id}')" style="flex: 1.2; padding: 11px 4px; background: var(--accent-primary)18; color: var(--accent-primary); border: none; font-size: 13px; font-weight: 700; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation;">
-                  🤝 Split
+                <button onclick="event.stopPropagation(); app.showCarryAllocator('${carry.id}')" title="Settle from multiple sources" aria-label="Multi-source split"
+                  style="flex: 1.4; padding: 9px 4px; background: var(--accent-primary)18; color: var(--accent-primary); border: none; font-size: 12px; font-weight: 700; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation; display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.1;">
+                  <span style="font-size:14px;">🤝</span>
+                  <span>Split</span>
                 </button>
-                <button onclick="event.stopPropagation(); app.clearCarry('${carry.id}', 'player')" style="flex: 1; padding: 11px 4px; background: var(--bg-tertiary); color: var(--text-primary); border: none; font-size: 12px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation;">
-                  👤
+                <button onclick="event.stopPropagation(); app.clearCarry('${carry.id}', 'player')" title="Settle directly with this player" aria-label="Settle with player"
+                  style="flex: 1; padding: 9px 4px; background: var(--bg-tertiary); color: var(--text-primary); border: none; font-size: 11px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation; display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.1;">
+                  <span style="font-size:14px;">👤</span>
+                  <span>Player</span>
                 </button>
-                <button onclick="event.stopPropagation(); app.clearCarry('${carry.id}', 'dealer_stash')" style="flex: 1; padding: 11px 4px; background: var(--bg-tertiary); color: var(--accent-success); border: none; font-size: 12px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation;">
-                  🃏
+                <button onclick="event.stopPropagation(); app.clearCarry('${carry.id}', 'dealer_stash')" title="Settle into / from Dealer Stash" aria-label="Settle via Dealer Stash"
+                  style="flex: 1; padding: 9px 4px; background: var(--bg-tertiary); color: var(--accent-success); border: none; font-size: 11px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation; display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.1;">
+                  <span style="font-size:14px;">🃏</span>
+                  <span>Stash</span>
                 </button>
-                <button onclick="event.stopPropagation(); app.clearCarry('${carry.id}', 'derrick_float')" style="flex: 1; padding: 11px 4px; background: var(--bg-tertiary); color: var(--accent-primary); border: none; font-size: 12px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation;">
-                  🏦
+                <button onclick="event.stopPropagation(); app.clearCarry('${carry.id}', 'derrick_float')" title="Settle into / from Derrick's Float (Cash)" aria-label="Settle via Float Cash"
+                  style="flex: 1; padding: 9px 4px; background: var(--bg-tertiary); color: var(--accent-primary); border: none; font-size: 11px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation; display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.1;">
+                  <span style="font-size:14px;">🏦</span>
+                  <span>Cash</span>
                 </button>
-                <button onclick="event.stopPropagation(); app.clearCarry('${carry.id}', 'usdt')" style="flex: 1; padding: 11px 4px; background: var(--bg-tertiary); color: #f7931a; border: none; font-size: 12px; font-weight: 600; cursor: pointer; touch-action: manipulation;">
-                  🔶
+                <button onclick="event.stopPropagation(); app.clearCarry('${carry.id}', 'usdt')" title="Settle via USDT (uses live rate)" aria-label="Settle via USDT"
+                  style="flex: 1; padding: 9px 4px; background: var(--bg-tertiary); color: #f7931a; border: none; font-size: 11px; font-weight: 600; cursor: pointer; touch-action: manipulation; display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.1;">
+                  <span style="font-size:14px;">🔶</span>
+                  <span>USDT</span>
                 </button>
               </div>
             `;
