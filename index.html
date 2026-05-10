@@ -4579,23 +4579,6 @@
         }
       },
 
-      _coParkRemainder() {
-        const cashout = this._coReadAmt('coAmount');
-        const buyin = app._coBuyin || 0;
-        const settle = Math.abs(cashout - buyin);
-        let allocated = 0;
-        document.querySelectorAll('[data-src-row]').forEach(row => {
-          allocated += this._coReadAllocAmt(row.querySelector('input.alloc-src'));
-        });
-        const remaining = settle - allocated;
-        if (remaining <= 0) return;
-        const parkInput = document.querySelector('[data-src-row][data-src-type="park"] input.alloc-src');
-        if (parkInput) {
-          parkInput.value = remaining.toLocaleString();
-          this._coAllocRecompute();
-        }
-      },
-
       _fmtCashoutAmount(input) {
         const raw = (input.value || '').replace(/[^0-9]/g, '');
         input.value = raw ? parseInt(raw).toLocaleString() : '';
