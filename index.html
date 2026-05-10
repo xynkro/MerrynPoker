@@ -9057,11 +9057,18 @@
           if (tx.type === 'ADVANCE_OUT') { icon = '🎅'; txLabel = 'Derrick Advance'; }
           if (tx.type === 'SEED') { icon = '🌱'; txLabel = 'Opening Balance'; }
 
+          // Prefer the explicit timestamp field, fall back to created_at for
+          // imported rows. Render "—" rather than "Invalid Date" if neither is
+          // a parseable date.
+          const tsRaw = tx.timestamp || tx.created_at || null;
+          const tsDate = tsRaw ? new Date(tsRaw) : null;
+          const tsLabel = tsDate && !isNaN(tsDate.getTime()) ? tsDate.toLocaleDateString() : '—';
+
           item.innerHTML = `
             <div class="transaction-icon">${icon}</div>
             <div class="transaction-details">
               <div class="transaction-label">${txLabel}</div>
-              <div class="transaction-meta">${new Date(tx.timestamp).toLocaleDateString()} ${player ? '• ' + player.name : ''}</div>
+              <div class="transaction-meta">${tsLabel} ${player ? '• ' + player.name : ''}</div>
             </div>
             <div>
               ${tx.amount_sgd !== 0 && tx.amount_sgd !== null ? `<div class="transaction-amount ${tx.amount_sgd > 0 ? 'positive' : 'negative'}">${tx.amount_sgd > 0 ? '+' : ''}$${Math.abs(tx.amount_sgd).toLocaleString()}</div>` : ''}
