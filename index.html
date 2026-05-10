@@ -4241,23 +4241,43 @@
         const stashTotal = allDsTx.reduce((s, tx) => s + (tx.amount_sgd || 0), 0);
         const liveRate = await this.fetchLiveRates().then(r => Number(r?.usdtSgd) || 1.27).catch(() => 1.27);
 
-        // Compute losers at table for "Other Players" (only relevant for winners)
-        const losers = [];
+        // Compute counterparties — ONLY cashed-out players have realized P/L.
+        // Buy-ins are markers, not actual cash flow, so a player who hasn't cashed
+        // out hasn't lost or won anything yet and isn't an eligible source.
+        // Each counterparty also has a direction (winner / loser) so the modal
+        // can show the right ones based on whether the current entry is paying
+        // (winner) or collecting (loser).
+        const counterparties = [];
         for (const e of allEntries) {
           if (e.deleted_at || e.id === entryId) continue;
           if (playerMap[e.player_id]?.role === 'dealer') continue;
+          if (e.cash_out === null || e.cash_out === undefined) continue;
+
           const buyIn = (e.buy_ins || []).reduce((s, b) => s + b.amount, 0);
-          const cashedOut = e.cash_out !== null && e.cash_out !== undefined;
-          const loss = cashedOut ? (buyIn - e.cash_out) : buyIn;
-          const alreadyPaid = tablePmts.filter(tp => tp.from_player_id === e.player_id && tp.from_source === 'player').reduce((s, tp) => s + tp.amount, 0);
-          const unsettled = Math.max(0, loss - alreadyPaid);
-          if (unsettled > 0) losers.push({ playerId: e.player_id, name: playerMap[e.player_id]?.name || '?', unsettled });
+          const peerNetPl = e.cash_out - buyIn;
+          if (peerNetPl === 0) continue;
+
+          const peerPaidOut = tablePmts.filter(tp => tp.from_player_id === e.player_id && tp.from_source === 'player').reduce((s, tp) => s + tp.amount, 0);
+          const peerReceived = tablePmts.filter(tp => tp.to_player_id === e.player_id).reduce((s, tp) => s + tp.amount, 0);
+
+          const isWinner = peerNetPl > 0;
+          const unsettled = isWinner
+            ? Math.max(0, peerNetPl - peerReceived)
+            : Math.max(0, Math.abs(peerNetPl) - peerPaidOut);
+          if (unsettled <= 0) continue;
+
+          counterparties.push({
+            playerId: e.player_id,
+            name: playerMap[e.player_id]?.name || '?',
+            isWinner,
+            unsettled,
+          });
         }
-        losers.sort((a, b) => b.unsettled - a.unsettled);
+        counterparties.sort((a, b) => b.unsettled - a.unsettled);
 
         // Stash state for live recompute
         app._coBuyin = totalBuyin;
-        app._coAlloc = { entryId, totalBuyin, rate: liveRate, losers, floatCash, floatUsdt, stashTotal };
+        app._coAlloc = { entryId, totalBuyin, rate: liveRate, counterparties, floatCash, floatUsdt, stashTotal };
 
         this.closeActionSheet();
         const modal = document.getElementById('modal');
@@ -4266,17 +4286,28 @@
 
         const fmt = (n) => Math.round(n).toLocaleString();
 
-        // Render rows for each source. Auto-suggest only on a fresh winner cashout
-        // (not on edit) — otherwise we'd clobber the dealer's prior allocations.
-        const losersHtml = losers.length === 0 ? '' : losers.map(l => `
-          <div data-src-row data-src-type="loser" data-src-id="${l.playerId}" data-cap="${l.unsettled}"
-               style="display:flex; align-items:center; gap:8px; padding:7px 4px; border-bottom:1px solid var(--border-color);">
-            <span style="flex:1; font-size:13px;">▶ ${this._esc(l.name)}
-              <span style="font-size:11px; color:var(--text-secondary);">unsettled $${fmt(l.unsettled)}</span></span>
+        // Render counterparty rows. Each row has data-show-when which determines
+        // visibility based on the CURRENT entry's direction:
+        //   - data-show-when="winner": shown when current entry is winning (counterparty paid them)
+        //   - data-show-when="loser":  shown when current entry is losing (current pays counterparty)
+        // _coAllocRecompute toggles row visibility every time the cashout amount changes.
+        const counterpartiesHtml = counterparties.length === 0 ? '' : counterparties.map(c => {
+          // Counterparty's own status (loser/winner). Current's direction determines visibility:
+          // - If counterparty is loser → relevant when CURRENT is winner (loser paid current)
+          // - If counterparty is winner → relevant when CURRENT is loser (current pays winner)
+          const showWhen = c.isWinner ? 'loser' : 'winner';
+          const srcType = c.isWinner ? 'pay_winner' : 'paid_by_loser';
+          const tag = c.isWinner ? 'won' : 'lost';
+          return `
+          <div data-src-row data-src-type="${srcType}" data-src-id="${c.playerId}" data-cap="${c.unsettled}" data-show-when="${showWhen}"
+               style="display:none; align-items:center; gap:8px; padding:7px 4px; border-bottom:1px solid var(--border-color);">
+            <span style="flex:1; font-size:13px;">▶ ${this._esc(c.name)}
+              <span style="font-size:11px; color:var(--text-secondary);">${tag} $${fmt(c.unsettled)} unsettled</span></span>
             <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
               oninput="app._coAllocFmt(this)" onclick="this.select()"
               style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
-          </div>`).join('');
+          </div>`;
+        }).join('');
 
         document.getElementById('modalBody').innerHTML = `
           <div style="margin-bottom:12px; padding:10px 12px; background:var(--bg-tertiary); border-radius:10px; font-size:13px;">
@@ -4305,9 +4336,9 @@
               <span id="coSettleLabel">Settle</span> <span id="coSettleAmt" style="font-weight:700;">$0</span> from:
             </div>
             <div style="border:1px solid var(--border-color); border-radius:10px; padding:6px 8px;">
-              ${losers.length > 0 ? `
-                <div style="font-size:11px; color:var(--text-secondary); padding:4px 0; font-weight:700; letter-spacing:0.4px; text-transform:uppercase;">👥 Other Players (paid this guy)</div>
-                ${losersHtml}` : ''}
+              ${counterparties.length > 0 ? `
+                <div id="coOtherPlayersHeader" style="display:none; font-size:11px; color:var(--text-secondary); padding:4px 0; font-weight:700; letter-spacing:0.4px; text-transform:uppercase;">👥 Other Players</div>
+                ${counterpartiesHtml}` : ''}
               <div style="font-size:11px; color:var(--text-secondary); padding:8px 0 4px; font-weight:700; letter-spacing:0.4px; text-transform:uppercase;">Sources</div>
               <div data-src-row data-src-type="float_sgd" data-cap="999999999"
                    style="display:flex; align-items:center; gap:8px; padding:7px 4px; border-bottom:1px solid var(--border-color);">
@@ -4377,18 +4408,36 @@
       },
 
       _coAllocRecompute() {
+        // Use the raw input value to distinguish "untyped" from "explicit 0".
+        const co = document.getElementById('coAmount');
+        const cashoutRaw = (co?.value || '').trim();
+        const cashoutEntered = cashoutRaw !== '';
         const cashout = this._coReadAmt('coAmount');
         const buyin = app._coBuyin || 0;
         const netPl = cashout - buyin;
         const settle = Math.abs(netPl);
+        const direction = netPl > 0 ? 'winner' : (netPl < 0 ? 'loser' : '');
+
+        // Toggle counterparty rows based on direction. Hide all until the
+        // dealer has actually entered a cashout amount (avoids the confusing
+        // case of showing eligible peers before the direction is known).
+        let visibleCounterparties = 0;
+        document.querySelectorAll('[data-show-when]').forEach(row => {
+          const visible = cashoutEntered && !!direction && row.dataset.showWhen === direction;
+          row.style.display = visible ? 'flex' : 'none';
+          if (visible) visibleCounterparties++;
+        });
+        const header = document.getElementById('coOtherPlayersHeader');
+        if (header) header.style.display = visibleCounterparties > 0 ? '' : 'none';
 
         const settleLabelEl = document.getElementById('coSettleLabel');
         if (settleLabelEl) settleLabelEl.textContent = netPl >= 0 ? 'Pay' : 'Collect';
         document.getElementById('coSettleAmt').textContent = `$${settle.toLocaleString()}`;
 
-        // Sum allocated (only positive numbers in inputs)
         let allocated = 0;
         document.querySelectorAll('[data-src-row]').forEach(row => {
+          // Hidden rows don't count (their value shouldn't apply when wrong direction)
+          if (row.style.display === 'none') return;
           allocated += this._coReadAllocAmt(row.querySelector('input.alloc-src'));
         });
 
@@ -4397,8 +4446,8 @@
         const actions = document.getElementById('coAllocActions');
         const remaining = settle - allocated;
 
-        if (cashout === 0) {
-          if (status) { status.textContent = 'Enter a cashout amount'; status.style.color = 'var(--text-secondary)'; }
+        if (!cashoutEntered) {
+          if (status) { status.textContent = 'Enter a cashout amount above'; status.style.color = 'var(--text-secondary)'; }
           if (confirm) confirm.disabled = true;
           if (actions) actions.style.display = 'none';
           return;
@@ -4601,17 +4650,25 @@
           const id = row.dataset.srcId;
           totalAllocated += amt;
 
-          if (type === 'loser') {
+          if (type === 'paid_by_loser' || type === 'pay_winner') {
+            // Peer-to-peer payment direction depends on counterparty's role.
+            // paid_by_loser: counterparty (loser) → current (winner)
+            // pay_winner:    current (loser) → counterparty (winner)
+            const counterName = (app._coAlloc?.counterparties || []).find(c => c.playerId === id)?.name || '?';
+            const fromId = type === 'paid_by_loser' ? id : winnerId;
+            const toId   = type === 'paid_by_loser' ? winnerId : id;
+            const fromName = type === 'paid_by_loser' ? counterName : playerName;
+            const toName   = type === 'paid_by_loser' ? playerName : counterName;
             await db.put('tablePayments', {
               id: crypto.randomUUID(),
               session_id: session.id,
               timestamp: now,
               type: 'TABLE_PAYMENT',
               from_source: 'player',
-              from_player_id: id,
-              to_player_id: winnerId,
+              from_player_id: fromId,
+              to_player_id: toId,
               amount: amt,
-              note: `Cashout allocator — ${(app._coAlloc?.losers || []).find(l => l.playerId === id)?.name || '?'} → ${playerName}`,
+              note: `Cashout allocator — ${fromName} → ${toName}`,
               updated_at: now,
               deleted_at: null,
             });
