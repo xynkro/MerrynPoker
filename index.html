@@ -3818,7 +3818,7 @@
             <span>${otherEntriesForHeader.length} players</span>
             <span>${playersIn} in play · ${playersOut} cashed out</span>
             <div style="display:flex; align-items:center; gap:6px;">
-              <span style="padding: 3px 10px; border-radius: 12px; font-weight: 600; font-size: 12px; background: ${isActive ? 'var(--accent-warning)' : isSettled ? 'var(--accent-success)' : 'var(--text-secondary)'}22; color: ${isActive ? 'var(--accent-warning)' : isSettled ? 'var(--accent-success)' : 'var(--text-secondary)'};">${session.status}</span>
+              <span style="padding: 3px 10px; border-radius: 12px; font-weight: 600; font-size: 12px; background: ${isActive ? 'var(--accent-warning)' : isSettled ? 'var(--accent-success)' : 'var(--text-secondary)'}22; color: ${isActive ? 'var(--accent-warning)' : isSettled ? 'var(--accent-success)' : 'var(--text-secondary)'};">${session.status || (session.ended_at ? 'settled' : 'unknown')}</span>
               <span id="syncBadge" style="font-size:11px;" title=""></span>
             </div>
           </div>
@@ -6932,7 +6932,11 @@
           const cashOutTotal = nonDealerEntries.reduce((s, e) => s + (e.cash_out || 0), 0);
           const dealerTake = totalBuyIn - cashOutTotal;
           const playerCount = nonDealerEntries.length;
-          const statusColor = session.status === 'settled' ? 'var(--accent-success)' : session.status === 'active' ? 'var(--accent-warning)' : 'var(--text-secondary)';
+          // Defensive: imported / legacy sessions might be missing `status` (we've
+          // seen at least one in the wild). Fall back to deriving from ended_at,
+          // and label everything else "Unknown" rather than crashing on .charAt().
+          const sessStatus = session.status || (session.ended_at ? 'settled' : 'unknown');
+          const statusColor = sessStatus === 'settled' ? 'var(--accent-success)' : sessStatus === 'active' ? 'var(--accent-warning)' : 'var(--text-secondary)';
 
           // Top winners and losers (non-dealer)
           const sorted_entries = [...nonDealerEntries].sort((a, b) => (b.net_pl || 0) - (a.net_pl || 0));
@@ -6969,7 +6973,7 @@
               </div>
               <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px;">
                 <div style="padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600; background: ${statusColor}22; color: ${statusColor}; border: 1px solid ${statusColor}44;">
-                  ${session.status.charAt(0).toUpperCase() + session.status.slice(1)}
+                  ${sessStatus.charAt(0).toUpperCase() + sessStatus.slice(1)}
                 </div>
                 ${dealerTakeBadge}
               </div>
@@ -7939,7 +7943,9 @@
           return (b.net_pl || 0) - (a.net_pl || 0);
         });
 
-        const statusColor = session.status === 'settled' ? 'var(--accent-success)' : 'var(--accent-warning)';
+        // Defensive: legacy / imported sessions might be missing `status`.
+        const sessStatus = session.status || (session.ended_at ? 'settled' : 'unknown');
+        const statusColor = sessStatus === 'settled' ? 'var(--accent-success)' : 'var(--accent-warning)';
 
         let html = `
           <div style="margin-bottom: 20px;">
@@ -7949,7 +7955,7 @@
             <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
               <span style="padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; background: var(--bg-tertiary); color: var(--text-secondary);">${playerEntries.length} players</span>
               <span style="padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; background: var(--bg-tertiary); color: var(--text-secondary);">$${totalBuyIn.toLocaleString()} pot</span>
-              <span style="padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; background: ${statusColor}22; color: ${statusColor}; border: 1px solid ${statusColor}44;">${session.status.charAt(0).toUpperCase() + session.status.slice(1)}</span>
+              <span style="padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; background: ${statusColor}22; color: ${statusColor}; border: 1px solid ${statusColor}44;">${sessStatus.charAt(0).toUpperCase() + sessStatus.slice(1)}</span>
               ${this.isDealer() ? `<span style="padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; background: var(--accent-success)22; color: var(--accent-success); border: 1px solid var(--accent-success)44;">🃏 $${dealerTake.toLocaleString()}</span>` : ''}
             </div>
           </div>
