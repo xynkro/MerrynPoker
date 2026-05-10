@@ -8020,11 +8020,12 @@
           html += `<div class="section-title" style="margin-top: 20px;">Float Transactions</div>`;
           for (const tx of transactions) {
             const txPlayer = players.find(p => p.id === tx.player_id);
+            const { icon: txIcon, label: txLabel } = this._floatTxLabel(tx.type);
             html += `
-              <div style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; margin-bottom: 8px; font-size: 14px; display: flex; justify-content: space-between; align-items: center;">
-                <div>
-                  <div style="font-weight: 600;">${tx.type}</div>
-                  <div style="color: var(--text-secondary); font-size: 12px;">${txPlayer?.name || ''} ${tx.note ? '· ' + tx.note : ''}</div>
+              <div style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; margin-bottom: 8px; font-size: 14px; display: flex; justify-content: space-between; align-items: center; gap:10px;">
+                <div style="min-width:0; flex:1;">
+                  <div style="font-weight: 600;">${txIcon} ${txLabel}</div>
+                  <div style="color: var(--text-secondary); font-size: 12px;">${txPlayer?.name || ''}${tx.note ? (txPlayer ? ' · ' : '') + tx.note : ''}</div>
                 </div>
                 <div style="text-align: right;">
                   ${tx.amount_sgd ? `<div style="color: ${tx.amount_sgd > 0 ? 'var(--accent-success)' : 'var(--accent-danger)'}; font-weight: 600;">${tx.amount_sgd > 0 ? '+' : ''}$${tx.amount_sgd.toLocaleString()}</div>` : ''}
@@ -9040,22 +9041,7 @@
           const item = document.createElement('div');
           item.className = 'transaction-item';
 
-          let icon = '💰';
-          let txLabel = tx.type;
-          if (tx.type === 'SETTLEMENT_CASH_IN') { icon = '📥'; txLabel = 'Cash In'; }
-          if (tx.type === 'SETTLEMENT_CASH_OUT') { icon = '📤'; txLabel = 'Cash Out'; }
-          if (tx.type === 'USDT_TRANSFER') { icon = '🔄'; txLabel = 'USDT Transfer'; }
-          if (tx.type === 'USDT_PAYOUT') { icon = '🔶'; txLabel = 'USDT Payout'; }
-          if (tx.type === 'USDT_COLLECTION') { icon = '🔷'; txLabel = 'USDT Collected'; }
-          if (tx.type === 'USDT_SWAP_CASH_IN') { icon = '📥'; txLabel = 'USDT Swap → Cash In'; }
-          if (tx.type === 'USDT_SWAP_CASH_OUT') { icon = '📤'; txLabel = 'USDT Swap → Cash Out'; }
-          if (tx.type === 'BANK_ABSORB') { icon = '🏦'; txLabel = 'Derrick Session'; }
-          if (tx.type === 'BANK_WIN') { icon = '📈'; txLabel = 'Derrick Won'; }
-          if (tx.type === 'BANK_LOSS') { icon = '📉'; txLabel = 'Derrick Lost'; }
-          if (tx.type === 'DEALER_TIPS') { icon = '🃏'; txLabel = 'Dealer Tips'; }
-          if (tx.type === 'ADJUSTMENT') { icon = '⚙️'; txLabel = 'Adjustment'; }
-          if (tx.type === 'ADVANCE_OUT') { icon = '🎅'; txLabel = 'Derrick Advance'; }
-          if (tx.type === 'SEED') { icon = '🌱'; txLabel = 'Opening Balance'; }
+          const { icon, label: txLabel } = this._floatTxLabel(tx.type);
 
           // Prefer the explicit timestamp field, fall back to created_at for
           // imported rows. Render "—" rather than "Invalid Date" if neither is
@@ -9427,6 +9413,30 @@
           mixed:         '⚖️ Mixed',
         };
         return labels[method] || method;
+      },
+
+      // Friendly label + icon for a floatTransactions row's `type` slug.
+      // Used by the Float screen ledger and Session Detail's Float section.
+      // Returns { icon, label } — falls back to a generic 💰 icon and the raw
+      // slug for unknown types.
+      _floatTxLabel(type) {
+        const map = {
+          SETTLEMENT_CASH_IN:  { icon: '📥', label: 'Cash In' },
+          SETTLEMENT_CASH_OUT: { icon: '📤', label: 'Cash Out' },
+          USDT_TRANSFER:       { icon: '🔄', label: 'USDT Transfer' },
+          USDT_PAYOUT:         { icon: '🔶', label: 'USDT Payout' },
+          USDT_COLLECTION:     { icon: '🔷', label: 'USDT Collected' },
+          USDT_SWAP_CASH_IN:   { icon: '📥', label: 'USDT Swap → Cash In' },
+          USDT_SWAP_CASH_OUT:  { icon: '📤', label: 'USDT Swap → Cash Out' },
+          BANK_ABSORB:         { icon: '🏦', label: 'Derrick Session' },
+          BANK_WIN:            { icon: '📈', label: 'Derrick Won' },
+          BANK_LOSS:           { icon: '📉', label: 'Derrick Lost' },
+          DEALER_TIPS:         { icon: '🃏', label: 'Dealer Tips' },
+          ADJUSTMENT:          { icon: '⚙️', label: 'Adjustment' },
+          ADVANCE_OUT:         { icon: '🎅', label: 'Derrick Advance' },
+          SEED:                { icon: '🌱', label: 'Opening Balance' },
+        };
+        return map[type] || { icon: '💰', label: type || '—' };
       },
 
       async saveMyName() {
