@@ -3993,12 +3993,19 @@
               const netPl = entry.cash_out - totalBuyin;
               const roleBadge = player?.role === 'bank' ? ' 🏦' : '';
               const methodIcon = entry.settlement_method ? (methodIcons[entry.settlement_method] || '·') : '';
-              // Balance = remaining net P/L still owed (winner) or still owing (loser).
-              // paid_amount stores net winnings paid; legacy gross values are clamped to netPl.
-              const rawPaid = entry.paid_amount ?? Math.max(0, netPl);
-              const paid = (netPl > 0 && rawPaid > netPl) ? netPl : rawPaid;
-              const balance = netPl > 0 ? (netPl - paid) : (netPl < 0 ? -(Math.abs(netPl) - paid) : 0);
-              const balanceHint = balance !== 0 ? ` · Bal $${Math.abs(balance).toLocaleString()}` : '';
+              // Residual = remaining net P/L not yet settled. Direction-aware
+              // label avoids the ambiguous "Bal" abbreviation (which Sarah read
+              // as "balance available" rather than "still pending"):
+              //   winner residual → "Owed $X"  (table still owes the player)
+              //   loser  residual → "Owes $X"  (player still owes the table)
+              // paid_amount stores net winnings paid; legacy gross values were
+              // clamped to netPl so the absolute-clamp here keeps both shapes safe.
+              const rawPaid = entry.paid_amount ?? Math.max(0, Math.abs(netPl));
+              const paid = Math.min(rawPaid, Math.abs(netPl));
+              const residual = Math.abs(netPl) - paid;
+              const balanceHint = residual > 0
+                ? ` · ${netPl > 0 ? 'Owed' : 'Owes'} $${residual.toLocaleString()}`
+                : '';
               const editable = isActive && this.isDealer();
               html += `
                 <div class="player-card cashed-out" ${editable ? `onclick="app.showCashOutModal('${entry.id}')" style="cursor:pointer;"` : ''}>
