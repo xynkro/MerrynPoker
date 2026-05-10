@@ -4087,12 +4087,31 @@
           // Settlement summary block (only shown once cashed out)
           let settlementHtml = '';
           if (isCashedOut) {
-            const methodLabels = { pot: '🃏 Pot', cash: '💵 Cash', other_players: '👥 Other Players', mixed: '⚖️ Mixed', uncleared: '📋 Uncleared (carry)' };
+            // Method labels reflect current flows. Legacy labels (pot / mixed /
+            // other_players / cash) are kept so historical entries still render.
+            const methodLabels = {
+              allocated:     '🤝 Multi-source',
+              fully_settled: '✓ Settled outside app',
+              uncleared:     '📋 Parked as carry',
+              cash:          '💵 Cash',
+              pot:           '🃏 Pot',
+              other_players: '👥 Other Players',
+              mixed:         '⚖️ Mixed',
+            };
             const methodLabel = methodLabels[entry.settlement_method] || (entry.settlement_method ? entry.settlement_method : '—');
             const netPlA = entry.cash_out - totalBuyin;
-            const rawPaid = entry.paid_amount ?? Math.max(0, netPlA);
-            const paid = (netPlA > 0 && rawPaid > netPlA) ? netPlA : rawPaid;
-            const balance = netPlA > 0 ? (netPlA - paid) : (netPlA < 0 ? -(Math.abs(netPlA) - paid) : 0);
+            const rawPaid = entry.paid_amount ?? Math.max(0, Math.abs(netPlA));
+            // Cap the paid amount at the absolute net P/L on either side so we
+            // can't show e.g. "Paid $25,000 — Balance overpaid $5,000" when the
+            // user just typed too much. Display the residual as a positive number
+            // alongside a direction-aware label below.
+            const paid = Math.min(rawPaid, Math.abs(netPlA));
+            // residual > 0 means "still pending in the direction of netPlA".
+            const residual = Math.abs(netPlA) - paid;
+            // Direction-aware residual label:
+            //   winner with residual → "still owed to player" (Sarah owes them)
+            //   loser  with residual → "still owes"           (player owes Sarah)
+            const residualLabel = netPlA > 0 ? 'still owed to player' : 'still owes';
             settlementHtml = `
               <div style="display:flex; justify-content:space-between; margin-top:4px;">
                 <span style="font-size:12px; font-weight:700;">Cash out</span>
@@ -4102,14 +4121,14 @@
                 <span style="font-size:11px; color:var(--text-secondary);">Method</span>
                 <span style="font-size:12px; font-weight:600;">${methodLabel}</span>
               </div>
-              ${balance !== 0 ? `
+              ${residual > 0 ? `
                 <div style="display:flex; justify-content:space-between; margin-top:2px;">
                   <span style="font-size:11px; color:var(--text-secondary);">Paid</span>
                   <span style="font-size:12px; font-weight:600;">$${paid.toLocaleString()}</span>
                 </div>
                 <div style="display:flex; justify-content:space-between; margin-top:2px;">
-                  <span style="font-size:11px; color:var(--accent-warning);">Balance ${balance > 0 ? 'owed to player' : 'overpaid'}</span>
-                  <span style="font-size:12px; font-weight:700; color:var(--accent-warning);">$${Math.abs(balance).toLocaleString()}</span>
+                  <span style="font-size:11px; color:var(--accent-warning);">Balance ${residualLabel}</span>
+                  <span style="font-size:12px; font-weight:700; color:var(--accent-warning);">$${residual.toLocaleString()}</span>
                 </div>` : ''}
               ${entry.notes ? `
                 <div style="margin-top:6px; padding-top:6px; border-top:1px dashed var(--border-color); font-size:11px; color:var(--text-secondary); white-space:pre-wrap;">📝 ${this._esc(entry.notes)}</div>
