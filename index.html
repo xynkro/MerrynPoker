@@ -3962,17 +3962,11 @@
                     style="width: 92px; padding: 7px 8px; background: var(--bg-tertiary); color: var(--text-primary);
                            border: 1px solid var(--border-color); border-radius: 8px; font-size: 16px;
                            text-align: center; font-weight: 700; touch-action: manipulation;">
-                  <button onclick="app.cashOutFromTab('${entry.id}')" title="Cash out (single source)"
-                    style="padding: 8px 10px; border-radius: 8px; background: var(--accent-success)22;
+                  <button onclick="app.cashOutFromTab('${entry.id}')" title="Cash out — opens multi-source allocator"
+                    style="padding: 8px 12px; border-radius: 8px; background: var(--accent-success)22;
                            border: 1px solid var(--accent-success)55; color: var(--accent-success);
-                           font-size: 15px; font-weight: 700; cursor: pointer; touch-action: manipulation; white-space: nowrap;">
-                    💰
-                  </button>
-                  <button onclick="app.showCashOutAllocator('${entry.id}')" title="Allocate from multiple sources"
-                    style="padding: 8px 10px; border-radius: 8px; background: var(--accent-primary)22;
-                           border: 1.5px solid var(--accent-primary); color: var(--accent-primary);
-                           font-size: 13px; font-weight: 700; cursor: pointer; touch-action: manipulation; white-space: nowrap;">
-                    🤝 Split
+                           font-size: 14px; font-weight: 700; cursor: pointer; touch-action: manipulation; white-space: nowrap;">
+                    💰 Cash Out
                   </button>
                 </div>
                 ` : ''}
@@ -4217,8 +4211,10 @@
         });
       },
 
-      // Rich cashout modal: amount + settlement method + paid + notes.
-      // Re-opens with existing values when editing a cashout.
+      // Rich cashout modal: amount + multi-source allocator + notes.
+      // Sources: Other Players (losers in this session), Float Cash, Float USDT
+      // (live rate), Dealer Stash, and Park-as-carry. Each row is independent
+      // and partial — total of all source amounts must match |net P/L|.
       async showCashOutModal(entryId) {
         const entry = await db.get('sessionEntries', entryId);
         if (!entry) return;
@@ -4227,41 +4223,66 @@
         const isEditing = entry.cash_out !== null && entry.cash_out !== undefined;
 
         const initAmount = isEditing ? entry.cash_out : 0;
-        // 'Paid now' is the NET winnings paid to the player (above their buy-in return).
-        // For a new winner that's the net P/L; for a loser it's 0. Existing entries
-        // that were saved under the old gross-paid model are auto-detected and treated
-        // as if their net pay-out was max(0, paid_amount - buyin) so balance still
-        // makes sense — see commitCashout for the reverse migration on save.
-        let initPaid;
-        if (entry.paid_amount !== undefined && entry.paid_amount !== null) {
-          // Heuristic: if stored value is suspiciously close to gross cashout but the
-          // player's a winner, interpret it as legacy gross. Otherwise trust as-is.
-          const netPl = initAmount - totalBuyin;
-          initPaid = (netPl > 0 && entry.paid_amount > netPl) ? netPl : entry.paid_amount;
-        } else {
-          initPaid = Math.max(0, initAmount - totalBuyin);
-        }
-        const initMethod = entry.settlement_method || '';
         const initNotes  = entry.notes || '';
 
-        // Stash for _updateCoBalance — read via app._coBuyin
+        const session = this.currentSession;
+        if (!session) return;
+
+        // Gather context for source pickers
+        const allEntries = await db.getAllByIndex('sessionEntries', 'session_id', session.id);
+        const players = await db.getAll('players');
+        const playerMap = Object.fromEntries(players.map(p => [p.id, p]));
+        const allFloatTx = await db.getAll('floatTransactions');
+        const allDsTx = await db.getAll('dealerStashTransactions');
+        const tablePmts = (await db.getAll('tablePayments')).filter(tp => tp.session_id === session.id && !tp.deleted_at);
+
+        const floatCash = allFloatTx.reduce((s, tx) => s + (tx.amount_sgd || 0), 0);
+        const floatUsdt = allFloatTx.reduce((s, tx) => s + (tx.amount_usdt || 0), 0);
+        const stashTotal = allDsTx.reduce((s, tx) => s + (tx.amount_sgd || 0), 0);
+        const liveRate = await this.fetchLiveRates().then(r => Number(r?.usdtSgd) || 1.27).catch(() => 1.27);
+
+        // Compute losers at table for "Other Players" (only relevant for winners)
+        const losers = [];
+        for (const e of allEntries) {
+          if (e.deleted_at || e.id === entryId) continue;
+          if (playerMap[e.player_id]?.role === 'dealer') continue;
+          const buyIn = (e.buy_ins || []).reduce((s, b) => s + b.amount, 0);
+          const cashedOut = e.cash_out !== null && e.cash_out !== undefined;
+          const loss = cashedOut ? (buyIn - e.cash_out) : buyIn;
+          const alreadyPaid = tablePmts.filter(tp => tp.from_player_id === e.player_id && tp.from_source === 'player').reduce((s, tp) => s + tp.amount, 0);
+          const unsettled = Math.max(0, loss - alreadyPaid);
+          if (unsettled > 0) losers.push({ playerId: e.player_id, name: playerMap[e.player_id]?.name || '?', unsettled });
+        }
+        losers.sort((a, b) => b.unsettled - a.unsettled);
+
+        // Stash state for live recompute
         app._coBuyin = totalBuyin;
+        app._coAlloc = { entryId, totalBuyin, rate: liveRate, losers, floatCash, floatUsdt, stashTotal };
 
         this.closeActionSheet();
         const modal = document.getElementById('modal');
         document.getElementById('modalTitle').textContent =
           (isEditing ? 'Edit Cashout — ' : 'Cash Out — ') + (player?.name || '?');
 
-        const methodBtn = (key, label) => `
-          <button type="button" data-method="${key}" onclick="app._coPickMethod(this)"
-            style="padding:11px 8px; background:var(--bg-tertiary); border:1px solid var(--border-color); color:var(--text-primary);
-                   border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; touch-action:manipulation;">${label}</button>`;
+        const fmt = (n) => Math.round(n).toLocaleString();
+
+        // Render rows for each source. Auto-suggest only on a fresh winner cashout
+        // (not on edit) — otherwise we'd clobber the dealer's prior allocations.
+        const losersHtml = losers.length === 0 ? '' : losers.map(l => `
+          <div data-src-row data-src-type="loser" data-src-id="${l.playerId}" data-cap="${l.unsettled}"
+               style="display:flex; align-items:center; gap:8px; padding:7px 4px; border-bottom:1px solid var(--border-color);">
+            <span style="flex:1; font-size:13px;">▶ ${this._esc(l.name)}
+              <span style="font-size:11px; color:var(--text-secondary);">unsettled $${fmt(l.unsettled)}</span></span>
+            <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
+              oninput="app._coAllocFmt(this)" onclick="this.select()"
+              style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
+          </div>`).join('');
 
         document.getElementById('modalBody').innerHTML = `
-          <div style="margin-bottom:14px; padding:12px; background:var(--bg-tertiary); border-radius:10px; font-size:13px;">
+          <div style="margin-bottom:12px; padding:10px 12px; background:var(--bg-tertiary); border-radius:10px; font-size:13px;">
             <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
               <span style="color:var(--text-secondary);">Buy-in</span>
-              <span style="font-weight:700;">$${totalBuyin.toLocaleString()}</span>
+              <span style="font-weight:700;">$${fmt(totalBuyin)}</span>
             </div>
             <div style="display:flex; justify-content:space-between;">
               <span style="color:var(--text-secondary);">Net P/L</span>
@@ -4272,42 +4293,63 @@
           <div class="form-group">
             <label class="form-label">Cashout amount</label>
             <input type="text" inputmode="numeric" id="coAmount" placeholder="0"
-              value="${initAmount > 0 ? initAmount.toLocaleString() : ''}"
-              oninput="app._fmtCashoutAmount(this); app._updateCoNetPl(${totalBuyin}); app._updateCoBalance();"
+              value="${initAmount > 0 ? fmt(initAmount) : ''}"
+              oninput="app._fmtCashoutAmount(this); app._updateCoNetPl(${totalBuyin}); app._coAllocRecompute();"
               onclick="this.select()"
               class="form-input"
               style="font-size:24px; text-align:center; font-weight:700;">
           </div>
 
-          <div class="form-group">
-            <label class="form-label">Settlement method</label>
-            <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
-              ${methodBtn('pot', '🃏 Cleared with Pot')}
-              ${methodBtn('cash', '💵 Cleared with Cash')}
-              ${methodBtn('other_players', '👥 Other Players')}
-              ${methodBtn('mixed', '⚖️ Mixed / Multiple')}
+          <div style="margin-bottom:10px;">
+            <div style="font-size:12px; color:var(--text-secondary); margin-bottom:6px;">
+              <span id="coSettleLabel">Settle</span> <span id="coSettleAmt" style="font-weight:700;">$0</span> from:
             </div>
-            <div style="margin-top:6px;">
-              <button type="button" data-method="uncleared" onclick="app._coPickMethod(this)"
-                style="width:100%; padding:11px 8px; background:var(--bg-tertiary); border:1px dashed var(--accent-warning)55; color:var(--accent-warning);
-                       border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; touch-action:manipulation;">📋 Uncleared — adds to Carries</button>
+            <div style="border:1px solid var(--border-color); border-radius:10px; padding:6px 8px;">
+              ${losers.length > 0 ? `
+                <div style="font-size:11px; color:var(--text-secondary); padding:4px 0; font-weight:700; letter-spacing:0.4px; text-transform:uppercase;">👥 Other Players (paid this guy)</div>
+                ${losersHtml}` : ''}
+              <div style="font-size:11px; color:var(--text-secondary); padding:8px 0 4px; font-weight:700; letter-spacing:0.4px; text-transform:uppercase;">Sources</div>
+              <div data-src-row data-src-type="float_sgd" data-cap="999999999"
+                   style="display:flex; align-items:center; gap:8px; padding:7px 4px; border-bottom:1px solid var(--border-color);">
+                <span style="flex:1; font-size:13px;">🏦 Float (Cash) <span style="font-size:11px; color:var(--text-secondary);">$${fmt(floatCash)} avail</span></span>
+                <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
+                  oninput="app._coAllocFmt(this)" onclick="this.select()"
+                  style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
+              </div>
+              <div data-src-row data-src-type="float_usdt" data-cap="999999999"
+                   style="display:flex; align-items:center; gap:8px; padding:7px 4px; border-bottom:1px solid var(--border-color);">
+                <span style="flex:1; font-size:13px;">🔶 Float (USDT @${liveRate.toFixed(4)} <span style="font-size:11px; color:var(--accent-success);">live</span>)
+                  <span style="font-size:11px; color:var(--text-secondary); margin-left:4px;">${floatUsdt.toFixed(2)}T avail</span></span>
+                <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
+                  oninput="app._coAllocFmt(this)" onclick="this.select()"
+                  style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
+              </div>
+              <div data-src-row data-src-type="stash" data-cap="999999999"
+                   style="display:flex; align-items:center; gap:8px; padding:7px 4px; border-bottom:1px solid var(--border-color);">
+                <span style="flex:1; font-size:13px;">🃏 Dealer Stash <span style="font-size:11px; color:var(--text-secondary);">$${fmt(stashTotal)} avail</span></span>
+                <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
+                  oninput="app._coAllocFmt(this)" onclick="this.select()"
+                  style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
+              </div>
+              <div data-src-row data-src-type="park" data-cap="999999999"
+                   style="display:flex; align-items:center; gap:8px; padding:7px 4px;">
+                <span style="flex:1; font-size:13px;">📋 Park as carry <span style="font-size:11px; color:var(--text-secondary);">→ Carries tab</span></span>
+                <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
+                  oninput="app._coAllocFmt(this)" onclick="this.select()"
+                  style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--accent-warning); border:1px dashed rgba(255,217,61,0.55); border-radius:6px; font-size:14px; text-align:right; font-weight:700;">
+              </div>
             </div>
-          </div>
-
-          <div class="form-group">
-            <label class="form-label">Paid now <span style="color:var(--text-secondary); font-weight:400; font-size:11px;">(net winnings paid; defaults to full P/L)</span></label>
-            <input type="text" inputmode="numeric" id="coPaid" placeholder="$0"
-              value="${initPaid > 0 ? initPaid.toLocaleString() : ''}"
-              oninput="app._fmtCashoutAmount(this); app._updateCoBalance();"
-              onclick="this.select()"
-              class="form-input">
-            <div id="coBalance" style="font-size:12px; margin-top:6px; text-align:center; min-height:14px;"></div>
+            <div id="coAllocStatus" style="margin-top:8px; text-align:center; font-weight:700; font-size:13px; min-height:18px;"></div>
+            <div id="coAllocActions" style="display:none; margin-top:6px;">
+              <button type="button" id="coParkRemainder" onclick="app._coParkRemainder()"
+                style="width:100%; padding:9px; background:var(--accent-warning)18; border:1px dashed var(--accent-warning)55; color:var(--accent-warning); border-radius:8px; font-size:12px; font-weight:700; cursor:pointer;">📋 Park remainder as carry</button>
+            </div>
           </div>
 
           <div class="form-group">
             <label class="form-label">Notes (optional)</label>
-            <textarea id="coNotes" placeholder="e.g. paid $20k cash + $10k via Sam, balance to clear"
-              style="width:100%; min-height:60px; padding:10px; background:var(--bg-tertiary); color:var(--text-primary);
+            <textarea id="coNotes" placeholder="e.g. paid via Sam + Wayne, USDT swap"
+              style="width:100%; min-height:50px; padding:10px; background:var(--bg-tertiary); color:var(--text-primary);
                      border:1px solid var(--border-color); border-radius:8px; font-size:14px; resize:vertical; font-family:inherit;">${this._esc(initNotes)}</textarea>
           </div>
         `;
@@ -4315,20 +4357,88 @@
         document.getElementById('modalFooter').innerHTML = `
           ${isEditing ? `<button class="btn btn-danger" onclick="app.cancelCashout('${entryId}')" style="flex:0 0 auto; padding:11px 12px;">Cancel CO</button>` : ''}
           <button class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
-          <button class="btn btn-primary" onclick="app.commitCashout('${entryId}', ${totalBuyin})">${isEditing ? 'Save' : 'Cash Out'}</button>
+          <button class="btn btn-primary" id="coConfirm" onclick="app.commitCashout('${entryId}', ${totalBuyin})" disabled>${isEditing ? 'Save' : 'Cash Out'}</button>
         `;
 
         modal.classList.add('show');
-        // Pre-select method if editing
-        if (initMethod) {
-          const btn = document.querySelector(`#modalBody [data-method="${initMethod}"]`);
-          if (btn) this._coPickMethod(btn);
-        }
-        // Initial computed displays
         this._updateCoNetPl(totalBuyin);
-        this._updateCoBalance();
-        // Focus amount input on first open (skip on edit so user sees existing values first)
+        this._coAllocRecompute();
         if (!isEditing) setTimeout(() => document.getElementById('coAmount')?.focus(), 60);
+      },
+
+      _coAllocFmt(input) {
+        const raw = input.value.replace(/[^0-9]/g, '');
+        input.value = raw ? parseInt(raw).toLocaleString() : '';
+        this._coAllocRecompute();
+      },
+
+      _coReadAllocAmt(el) {
+        return parseInt(((el?.value || '').replace(/[^0-9]/g, '')), 10) || 0;
+      },
+
+      _coAllocRecompute() {
+        const cashout = this._coReadAmt('coAmount');
+        const buyin = app._coBuyin || 0;
+        const netPl = cashout - buyin;
+        const settle = Math.abs(netPl);
+
+        const settleLabelEl = document.getElementById('coSettleLabel');
+        if (settleLabelEl) settleLabelEl.textContent = netPl >= 0 ? 'Pay' : 'Collect';
+        document.getElementById('coSettleAmt').textContent = `$${settle.toLocaleString()}`;
+
+        // Sum allocated (only positive numbers in inputs)
+        let allocated = 0;
+        document.querySelectorAll('[data-src-row]').forEach(row => {
+          allocated += this._coReadAllocAmt(row.querySelector('input.alloc-src'));
+        });
+
+        const status = document.getElementById('coAllocStatus');
+        const confirm = document.getElementById('coConfirm');
+        const actions = document.getElementById('coAllocActions');
+        const remaining = settle - allocated;
+
+        if (cashout === 0) {
+          if (status) { status.textContent = 'Enter a cashout amount'; status.style.color = 'var(--text-secondary)'; }
+          if (confirm) confirm.disabled = true;
+          if (actions) actions.style.display = 'none';
+          return;
+        }
+        if (settle === 0) {
+          if (status) { status.textContent = '✓ Break-even — no allocation needed'; status.style.color = 'var(--accent-success)'; }
+          if (confirm) confirm.disabled = false;
+          if (actions) actions.style.display = 'none';
+          return;
+        }
+        if (remaining > 0) {
+          if (status) { status.textContent = `Need $${remaining.toLocaleString()} more`; status.style.color = 'var(--accent-warning)'; }
+          if (confirm) confirm.disabled = true;
+          if (actions) actions.style.display = '';
+        } else if (remaining === 0) {
+          if (status) { status.textContent = '✓ Fully allocated'; status.style.color = 'var(--accent-success)'; }
+          if (confirm) confirm.disabled = false;
+          if (actions) actions.style.display = 'none';
+        } else {
+          if (status) { status.textContent = `⚠ Over by $${Math.abs(remaining).toLocaleString()}`; status.style.color = 'var(--accent-danger)'; }
+          if (confirm) confirm.disabled = true;
+          if (actions) actions.style.display = 'none';
+        }
+      },
+
+      _coParkRemainder() {
+        const cashout = this._coReadAmt('coAmount');
+        const buyin = app._coBuyin || 0;
+        const settle = Math.abs(cashout - buyin);
+        let allocated = 0;
+        document.querySelectorAll('[data-src-row]').forEach(row => {
+          allocated += this._coReadAllocAmt(row.querySelector('input.alloc-src'));
+        });
+        const remaining = settle - allocated;
+        if (remaining <= 0) return;
+        const parkInput = document.querySelector('[data-src-row][data-src-type="park"] input.alloc-src');
+        if (parkInput) {
+          parkInput.value = remaining.toLocaleString();
+          this._coAllocRecompute();
+        }
       },
 
       _fmtCashoutAmount(input) {
@@ -4443,16 +4553,25 @@
         }
       },
 
+      // Commit a multi-source cashout. Reads source-row inputs (loser tablePayments,
+      // float SGD/USDT, dealer stash, park-as-carry) and writes appropriate records.
+      // Direction (pay vs collect) follows net P/L sign.
       async commitCashout(entryId, buyin) {
-        const amount = this._coReadAmt('coAmount');
-        if (amount < 0) return;
-        const paid    = this._coReadAmt('coPaid');
-        const notes   = (document.getElementById('coNotes')?.value || '').trim();
-        const sel     = document.querySelector('#modalBody [data-method][data-selected]');
-        const method  = sel?.dataset.method || null;
+        const cashout = this._coReadAmt('coAmount');
+        if (cashout < 0) return;
+        const notes = (document.getElementById('coNotes')?.value || '').trim();
 
         const entry = await db.get('sessionEntries', entryId);
         if (!entry) return;
+        const session = this.currentSession;
+        if (!session) return;
+        const now = new Date().toISOString();
+        const rate = app._coAlloc?.rate || 1.27;
+        const player = await app.getPlayer(entry.player_id);
+        const playerName = player?.name || '?';
+        const winnerId = entry.player_id;
+        const netPl = cashout - buyin;
+        const isWin = netPl > 0;
 
         // Snapshot for undo
         this.lastCashout = {
@@ -4464,25 +4583,113 @@
           prevNotes: entry.notes,
         };
 
-        entry.cash_out          = amount;
-        entry.net_pl            = amount - buyin;
-        entry.settlement_method = method;
-        // paid_amount = net winnings actually handed over (above buy-in return).
-        // Uncleared = nothing paid. Blank input = default to full net P/L (settled).
-        entry.paid_amount       = method === 'uncleared' ? 0 : (paid > 0 ? paid : Math.max(0, amount - buyin));
+        // Reconcile: if this is an EDIT, soft-delete any previously linked carry
+        // (we'll recreate a fresh one if "park" is allocated again).
+        if (entry.linked_carry_id) {
+          await db.softDelete('carryBalances', entry.linked_carry_id);
+          entry.linked_carry_id = null;
+        }
+
+        // Walk each source row and write records. Allocator validation already
+        // ensures totalAllocated == |netPl| (or break-even with no rows used).
+        let totalAllocated = 0;
+        const rows = [...document.querySelectorAll('[data-src-row]')];
+        for (const row of rows) {
+          const amt = this._coReadAllocAmt(row.querySelector('input.alloc-src'));
+          if (amt <= 0) continue;
+          const type = row.dataset.srcType;
+          const id = row.dataset.srcId;
+          totalAllocated += amt;
+
+          if (type === 'loser') {
+            await db.put('tablePayments', {
+              id: crypto.randomUUID(),
+              session_id: session.id,
+              timestamp: now,
+              type: 'TABLE_PAYMENT',
+              from_source: 'player',
+              from_player_id: id,
+              to_player_id: winnerId,
+              amount: amt,
+              note: `Cashout allocator — ${(app._coAlloc?.losers || []).find(l => l.playerId === id)?.name || '?'} → ${playerName}`,
+              updated_at: now,
+              deleted_at: null,
+            });
+          } else if (type === 'float_sgd') {
+            await db.put('floatTransactions', {
+              id: crypto.randomUUID(),
+              session_id: session.id,
+              timestamp: now,
+              type: isWin ? 'SETTLEMENT_CASH_OUT' : 'SETTLEMENT_CASH_IN',
+              amount_sgd: isWin ? -amt : amt,
+              amount_usdt: 0,
+              rate_used: null,
+              player_id: winnerId,
+              note: `Cashout — Float Cash ${isWin ? 'paid to' : 'collected from'} ${playerName}`,
+              updated_at: now,
+              deleted_at: null,
+            });
+          } else if (type === 'float_usdt') {
+            const usdt = amt / rate;
+            await db.put('floatTransactions', {
+              id: crypto.randomUUID(),
+              session_id: session.id,
+              timestamp: now,
+              type: isWin ? 'USDT_PAYOUT' : 'USDT_COLLECTION',
+              amount_sgd: 0,
+              amount_usdt: isWin ? -usdt : usdt,
+              rate_used: rate,
+              player_id: winnerId,
+              note: `Cashout — Float USDT ${isWin ? 'paid' : 'collected'}: ${usdt.toFixed(2)}T @ ${rate.toFixed(4)} = $${amt.toLocaleString()}`,
+              updated_at: now,
+              deleted_at: null,
+            });
+          } else if (type === 'stash') {
+            await db.put('dealerStashTransactions', {
+              id: crypto.randomUUID(),
+              session_id: session.id,
+              timestamp: now,
+              type: isWin ? 'PAYOUT' : 'COLLECT',
+              amount_sgd: isWin ? -amt : amt,
+              player_id: winnerId,
+              note: `Cashout — Dealer Stash ${isWin ? 'paid to' : 'collected from'} ${playerName}`,
+              updated_at: now,
+              deleted_at: null,
+            });
+          } else if (type === 'park') {
+            // Park unsettled portion as a carry (signed by win/loss direction)
+            const carryId = crypto.randomUUID();
+            await db.put('carryBalances', {
+              id: carryId,
+              player_id: winnerId,
+              amount_sgd: isWin ? amt : -amt,
+              origin_session_id: session.id,
+              origin_entry_id: entryId,
+              status: 'open',
+              cleared_at: null,
+              cleared_via: null,
+              rate_used: null,
+              usdt_amount: null,
+              note: `Parked from session ${new Date(session.date).toLocaleDateString('en-GB', { day:'numeric', month:'short' })} — ${playerName}`,
+              updated_at: now,
+              deleted_at: null,
+            });
+            entry.linked_carry_id = carryId;
+          }
+        }
+
+        // Update entry
+        entry.cash_out          = cashout;
+        entry.net_pl            = netPl;
+        entry.settlement_method = totalAllocated === 0 ? null : 'allocated';
+        entry.paid_amount       = totalAllocated;
         entry.notes             = notes || null;
-        entry.updated_at        = new Date().toISOString();
-
-        // Carry handling: 'uncleared' means create / sync a carry record so the
-        // outstanding amount surfaces on the Carries tab. Switching away from
-        // 'uncleared' soft-deletes any previously-linked carry.
-        await this._syncEntryCarry(entry);
-
+        entry.updated_at        = now;
         await db.put('sessionEntries', entry);
 
         this.closeModal();
         this.renderSessionScreen();
-        this.showUndoToast(method === 'uncleared' ? 'Cashout saved · added to Carries' : 'Cashout saved');
+        this.showUndoToast(entry.linked_carry_id ? 'Cashout saved · remainder added to Carries' : 'Cashout saved');
         this.autoSync();
       },
 
@@ -4614,24 +4821,21 @@
       },
 
       // Cash Out tab: read the inline input and record cashout
+      // 💰 Cash Out tap on a row: opens the multi-source modal pre-filled with
+      // whatever amount the dealer typed in the inline input on that row.
       async cashOutFromTab(entryId) {
         const inputEl = document.getElementById(`co_${entryId}`);
-        if (!inputEl) return;
-        const raw = inputEl.value.replace(/[^0-9]/g, '');
-        const amount = parseInt(raw || '');
-        if (isNaN(amount) || amount < 0) {
-          this.showToast('Enter a valid amount first');
-          inputEl.focus();
-          return;
+        const raw = (inputEl?.value || '').replace(/[^0-9]/g, '');
+        const amount = parseInt(raw, 10);
+        await this.showCashOutModal(entryId);
+        if (!isNaN(amount) && amount > 0) {
+          const co = document.getElementById('coAmount');
+          if (co) {
+            co.value = amount.toLocaleString();
+            this._updateCoNetPl(app._coBuyin || 0);
+            this._coAllocRecompute();
+          }
         }
-        const entry = await db.get('sessionEntries', entryId);
-        this.lastCashout = { entryId, prevCashOut: entry.cash_out, prevNetPl: entry.net_pl };
-        entry.cash_out = amount;
-        entry.net_pl = amount - (entry.buy_ins || []).reduce((s, b) => s + b.amount, 0);
-        await db.put('sessionEntries', entry);
-        this.renderSessionScreen();
-        this.showUndoToast('Cash out recorded');
-        this.autoSync();
       },
 
       // Settlement Allocator — winner-side, multi-source split.
