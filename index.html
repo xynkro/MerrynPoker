@@ -2186,8 +2186,13 @@
             );
             const cloudHasPlayers = probeSnap.exists() && probeSnap.numChildren() > 0;
             if (cloudHasPlayers) {
-              console.log('[cloud] Cloud has existing data — wiping local IndexedDB and pulling fresh.');
-              await this._wipeLocal();
+              // Cloud is authoritative, BUT this device may hold sessions it
+              // recorded offline before it ever synced. Wiping blindly would
+              // lose them (BE-5). Instead, push any LOCAL-ONLY records (ids not
+              // present in cloud) up first; the subscription listeners then pull
+              // everything down. Non-destructive merge rather than clobber.
+              console.log('[cloud] Cloud has existing data — merging local-only records up, then pulling fresh.');
+              await this._withTimeout(this._mergeLocalOnlyUp(), 30000, 'merge');
             } else {
               console.log('[cloud] Cloud is empty — seeding from local IndexedDB.');
               await this._withTimeout(this._bootstrapPushLocal(), 30000, 'bootstrap');
@@ -2271,6 +2276,37 @@
           console.warn('[cloud] bootstrap update failed:', e);
           throw e;
         }
+      },
+
+      // First-join merge (BE-5): push only LOCAL-ONLY records (ids the cloud
+      // doesn't already have) so a device that recorded sessions offline before
+      // ever syncing doesn't lose them. Records present in both are left alone —
+      // the subscription's last-writer-wins resolves those. Nothing is deleted.
+      async _mergeLocalOnlyUp() {
+        if (!this._fb) return;
+        const updates = {};
+        let pushed = 0;
+        for (const store of this.STORES) {
+          const all = await new Promise((resolve, reject) => {
+            const tx = db.instance.transaction([store], 'readonly');
+            const req = tx.objectStore(store).getAll();
+            req.onsuccess = () => resolve(req.result || []);
+            req.onerror = () => reject(req.error);
+          });
+          for (const record of all) {
+            if (!record?.id) continue;
+            // Does the cloud already have this id? Cheap per-id existence check.
+            let exists = false;
+            try {
+              const snap = await this._fb.ref(`${store}/${record.id}`).once('value');
+              exists = snap.exists();
+            } catch(e) { exists = false; }
+            if (!exists) { updates[`${store}/${record.id}`] = record; pushed++; }
+          }
+        }
+        if (pushed === 0) { console.log('[cloud] Merge: no local-only records to push.'); return; }
+        await this._fb.ref().update(updates);
+        console.log(`[cloud] Merge complete — pushed ${pushed} local-only record(s) the cloud was missing.`);
       },
 
       // Called from db.put on every IndexedDB write. Fire-and-forget.
@@ -6956,11 +6992,18 @@
         // EXCEPT carries parked by THIS session's own in-session cashouts — those
         // were excluded from net_position (UC-1) and must stay open to be settled
         // later, or the parked remainder would be silently wiped.
+        // Mark them cleared_via 'rolled-into-session' rather than a bare delete so
+        // the settlement is auditable in the Cleared tab, not vanished (UC-6).
+        const settledNow = new Date().toISOString();
         const tonightEntryIds = new Set(positions.map(p => p.id));
         for (const carry of carries) {
           if (carry.origin_entry_id && tonightEntryIds.has(carry.origin_entry_id)) continue;
           if (positions.some(p => p.player_id === carry.player_id)) {
-            await db.softDelete('carryBalances', carry.id);
+            carry.status = 'cleared';
+            carry.cleared_at = settledNow;
+            carry.cleared_via = 'rolled-into-session';
+            carry.updated_at = settledNow;
+            await db.put('carryBalances', carry);
           }
         }
 
@@ -8445,13 +8488,15 @@
           `;
           for (const r of recs) {
             const tagColor = r.tag === 'Float' ? 'var(--accent-warning)' : 'var(--accent-primary)';
+            // Grid (not flex) so the amount column lines up across every row
+            // whether or not a tag is present (UI-11). Tag occupies its own cell.
             recHtml += `
-              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 14px;">
-                <span style="font-weight: 600; color: var(--accent-danger); min-width: 70px;">${r.from}</span>
+              <div style="display: grid; grid-template-columns: minmax(0,1fr) 14px minmax(0,1fr) auto 56px; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 14px;">
+                <span style="font-weight: 600; color: var(--accent-danger); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${this._esc(r.from)}</span>
                 <span style="color: var(--text-secondary);">→</span>
-                <span style="font-weight: 600; color: var(--accent-success); min-width: 70px;">${r.to}</span>
-                <span style="margin-left: auto; font-weight: 700;">$${r.amount.toLocaleString()}</span>
-                ${r.tag ? `<span style="font-size: 11px; padding: 2px 8px; border-radius: 8px; background: ${tagColor}22; color: ${tagColor};">${r.tag}</span>` : ''}
+                <span style="font-weight: 600; color: var(--accent-success); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${this._esc(r.to)}</span>
+                <span style="font-weight: 700; text-align:right; white-space:nowrap;">$${r.amount.toLocaleString()}</span>
+                ${r.tag ? `<span style="font-size: 11px; padding: 2px 8px; border-radius: 8px; background: ${tagColor}22; color: ${tagColor}; text-align:center;">${r.tag}</span>` : '<span></span>'}
               </div>
             `;
           }
@@ -8555,8 +8600,11 @@
             item.className = 'carry-item';
             item.innerHTML = `
               <div class="carry-item-left">
-                <div class="carry-item-name">${player?.name || 'Unknown'}</div>
-                <div class="carry-item-meta">${this._carryClearedLabel(carry.cleared_via)} on ${this._fmtDate(carry.cleared_at)}</div>
+                <div class="carry-item-name">${this._esc(player?.name || 'Unknown')}</div>
+                <div class="carry-item-meta">
+                  <span style="display:inline-block; padding:2px 8px; border-radius:10px; background:var(--accent-success)22; color:var(--accent-success); font-size:11px; font-weight:600;">${this._carryClearedLabel(carry.cleared_via)}</span>
+                  <span style="margin-left:6px;">${this._fmtDate(carry.cleared_at)}</span>
+                </div>
               </div>
               <div class="carry-item-amount ${carry.amount_sgd > 0 ? 'positive' : 'negative'}">
                 ${carry.amount_sgd > 0 ? '+' : '-'}$${Math.abs(carry.amount_sgd).toLocaleString()}
@@ -8845,11 +8893,34 @@
         const carryPlayer = players.find(p => p.id === carry.player_id);
         const payerPlayer = players.find(p => p.id === payerPlayerId);
 
+        const now = new Date().toISOString();
         carry.status = 'cleared';
-        carry.cleared_at = new Date().toISOString();
+        carry.cleared_at = now;
         carry.cleared_via = `player:${payerPlayerId}`;
         carry.note = `Cleared via ${payerPlayer?.name}`;
         await db.put('carryBalances', carry);
+
+        // Record an auditable, reversible peer-settlement row (UC-5). Money
+        // genuinely moves between two players, NOT through the float/stash, so
+        // from_source is 'player' and no float/stash tx is written. Direction:
+        // carry owed (amount_sgd>0) → payer pays the carry player; carry owes
+        // (<0) → carry player pays the payer.
+        const absAmt = Math.abs(carry.amount_sgd);
+        const owed = carry.amount_sgd > 0;
+        await db.put('tablePayments', {
+          id: crypto.randomUUID(),
+          session_id: carry.origin_session_id || null,
+          origin_entry_id: null,
+          timestamp: now,
+          type: 'TABLE_PAYMENT',
+          from_source: 'player',
+          from_player_id: owed ? payerPlayerId : carry.player_id,
+          to_player_id:   owed ? carry.player_id : payerPlayerId,
+          amount: absAmt,
+          note: `Peer settlement of carry — ${payerPlayer?.name || '?'} ↔ ${carryPlayer?.name || '?'}`,
+          updated_at: now,
+          deleted_at: null,
+        });
 
         this.closeModal();
         this.showToast(`${carryPlayer?.name} cleared via ${payerPlayer?.name}`);
@@ -9689,6 +9760,8 @@
       _carryClearedLabel(via) {
         if (!via) return 'Cleared';
         if (via.startsWith('player:')) return 'Cleared via player';
+        if (via === 'rolled-into-session') return 'Rolled into session';
+        if (via === 'peer-payment') return 'Settled by peer payment';
         const map = {
           external:      'Settled outside app',
           dealer_stash:  'Cleared via Dealer Stash',
