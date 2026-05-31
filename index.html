@@ -1965,7 +1965,7 @@
 
     <!-- Modal -->
     <div id="modal" class="modal">
-      <div class="modal-content">
+      <div class="modal-content" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
         <div class="modal-title" id="modalTitle"></div>
         <div class="modal-body" id="modalBody"></div>
         <div class="modal-footer" id="modalFooter"></div>
@@ -2042,7 +2042,14 @@
             if (typeof cloud !== 'undefined') cloud.mirror(storeName, record);
             resolve(record);
           };
-          req.onerror = () => reject(req.error);
+          req.onerror = () => {
+            // Never let a local write fail silently — the user must not think a
+            // money entry saved when it didn't (DI-3). Still reject so callers'
+            // try/finally + flow logic run.
+            console.error('[db] write failed:', storeName, record.id, req.error);
+            if (typeof app !== 'undefined' && app.showToast) app.showToast('⚠️ Save failed — not recorded. Try again.');
+            reject(req.error);
+          };
         });
       },
 
@@ -2102,6 +2109,12 @@
     //   - Last-writer-wins via updated_at timestamp comparison
     //   - Fully optional: app keeps working offline if Firebase fails to load
     // ============================================================================
+    // Single source of truth for the USDT/SGD fallback rate used when the live
+    // rate fetch fails or hasn't returned yet. Previously the cashout/carry
+    // allocators used 1.27 while the settlement screen used 1.35 — a ~6% gap
+    // that valued the same USDT movement differently per screen (BE-4).
+    const FALLBACK_USDT_SGD = 1.30;
+
     const FIREBASE_CONFIG = {
       apiKey: "AIzaSyCEKB5der1vq5IocJV--00xImJThwyZDEQ",
       authDomain: "merrynpoker.firebaseapp.com",
@@ -2149,8 +2162,11 @@
 
         // Connection status badge
         this._fb.ref('.info/connected').on('value', (snap) => {
+          const wasConnected = this._connected;
           this._connected = snap.val() === true;
           this._updateBadge();
+          // On a fresh reconnect, flush any writes that failed while offline.
+          if (this._connected && !wasConnected) this._replayPendingMirrors();
         });
 
         // FIRST-TIME JOIN: decide who's authoritative.
@@ -2251,12 +2267,49 @@
       },
 
       // Called from db.put on every IndexedDB write. Fire-and-forget.
+      _pendingMirrors: [],     // [{store, id}] writes that failed to reach the cloud
+      _syncToastShown: false,  // debounce the "sync failed" toast during an outage
+
       async mirror(store, record) {
         if (this._suppressMirror) return;
         if (!this._fb || !record?.id) return;
         try {
           await this._fb.ref(`${store}/${record.id}`).set(record);
-        } catch(e) { console.warn('[cloud] mirror failed:', store, record.id, e); }
+        } catch(e) {
+          // The write is safe in IndexedDB but never reached other devices.
+          // Queue it for replay on reconnect and tell the user ONCE (DI-3) so a
+          // money entry can't silently fail to sync while everyone assumes it did.
+          console.warn('[cloud] mirror failed:', store, record.id, e);
+          this._pendingMirrors.push({ store, id: record.id });
+          if (typeof app !== 'undefined' && !this._syncToastShown) {
+            this._syncToastShown = true;
+            app.showToast('Saved on this device — cloud sync pending');
+          }
+          this._updateBadge();
+        }
+      },
+
+      // Replay queued writes after the connection comes back. Re-reads each
+      // record fresh from IndexedDB so we push the latest value, not a stale one.
+      async _replayPendingMirrors() {
+        if (!this._fb || this._pendingMirrors.length === 0) return;
+        const queue = this._pendingMirrors.splice(0);
+        let failed = 0;
+        for (const { store, id } of queue) {
+          try {
+            const rec = await db.get(store, id);
+            if (rec) await this._fb.ref(`${store}/${id}`).set(rec);
+          } catch(e) {
+            console.warn('[cloud] replay failed:', store, id, e);
+            this._pendingMirrors.push({ store, id });
+            failed++;
+          }
+        }
+        if (failed === 0) {
+          this._syncToastShown = false;
+          if (typeof app !== 'undefined' && queue.length) app.showToast('Cloud sync caught up');
+        }
+        this._updateBadge();
       },
 
       // Inbound change from RTDB. Apply only if newer than the local copy.
@@ -2309,7 +2362,12 @@
       _updateBadge() {
         const badge = document.getElementById('cloudBadge');
         if (!badge) return;
-        if (this._connected) {
+        const pending = this._pendingMirrors.length;
+        if (pending > 0) {
+          badge.textContent = '◐';
+          badge.style.color = 'var(--accent-warning)';
+          badge.title = `${pending} change${pending === 1 ? '' : 's'} saved locally, waiting to sync`;
+        } else if (this._connected) {
           badge.textContent = '●';
           badge.style.color = 'var(--accent-success)';
           badge.title = 'Live sync — connected to Firebase';
@@ -4289,7 +4347,7 @@
         const floatCash = allFloatTx.reduce((s, tx) => s + (tx.amount_sgd || 0), 0);
         const floatUsdt = allFloatTx.reduce((s, tx) => s + (tx.amount_usdt || 0), 0);
         const stashTotal = allDsTx.reduce((s, tx) => s + (tx.amount_sgd || 0), 0);
-        const liveRate = await this.fetchLiveRates().then(r => Number(r?.usdtSgd) || 1.27).catch(() => 1.27);
+        const liveRate = await this.fetchLiveRates().then(r => Number(r?.usdtSgd) || FALLBACK_USDT_SGD).catch(() => FALLBACK_USDT_SGD);
 
         // Compute counterparties — ONLY cashed-out players have realized P/L.
         // Buy-ins are markers, not actual cash flow, so a player who hasn't cashed
@@ -4801,7 +4859,7 @@
         const session = this.currentSession;
         if (!session) return;
         const now = new Date().toISOString();
-        const rate = app._coAlloc?.rate || 1.27;
+        const rate = app._coAlloc?.rate || FALLBACK_USDT_SGD;
         const player = await app.getPlayer(entry.player_id);
         const playerName = player?.name || '?';
         const winnerId = entry.player_id;
@@ -5207,7 +5265,7 @@
         // Float balances + live rate
         const floatCash = allFloatTx.reduce((s, tx) => s + (tx.amount_sgd || 0), 0);
         const floatUsdt = allFloatTx.reduce((s, tx) => s + (tx.amount_usdt || 0), 0);
-        const liveRate = await this.fetchLiveRates().then(r => Number(r?.usdtSgd) || 1.27).catch(() => 1.27);
+        const liveRate = await this.fetchLiveRates().then(r => Number(r?.usdtSgd) || FALLBACK_USDT_SGD).catch(() => FALLBACK_USDT_SGD);
 
         // Stash state for the live recompute helper
         app._allocator = {
@@ -5419,7 +5477,7 @@
         const entry = await db.get('sessionEntries', entryId);
         if (!entry || !session) return;
         const now = new Date().toISOString();
-        const rate = this._allocator?.rate || 1.27;
+        const rate = this._allocator?.rate || FALLBACK_USDT_SGD;
         const winnerId = entry.player_id;
 
         // Snapshot for undo of cashout itself
@@ -5564,7 +5622,7 @@
         const allFloatTx = await db.getAll('floatTransactions');
 
         // Live rate fetched RIGHT NOW — guarantees fresh rate even if the carry is days old.
-        const liveRate = await this.fetchLiveRates().then(r => Number(r?.usdtSgd) || 1.27).catch(() => 1.27);
+        const liveRate = await this.fetchLiveRates().then(r => Number(r?.usdtSgd) || FALLBACK_USDT_SGD).catch(() => FALLBACK_USDT_SGD);
         const ratedAt = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         const floatCash = allFloatTx.reduce((s, tx) => s + (tx.amount_sgd || 0), 0);
         const floatUsdt = allFloatTx.reduce((s, tx) => s + (tx.amount_usdt || 0), 0);
@@ -5716,7 +5774,7 @@
         const carry = await db.get('carryBalances', carryId);
         if (!carry) return;
         const isOwed = carry.amount_sgd > 0;
-        const rate = this._carryAlloc?.rate || 1.27;
+        const rate = this._carryAlloc?.rate || FALLBACK_USDT_SGD;
         const now = new Date().toISOString();
 
         let totalApplied = 0;
@@ -6700,13 +6758,13 @@
         }
 
         // Store settlement data for commit
-        app.settlementData = { session: this.currentSession, positions, floatCash, floatUsdt, entries, carries, players, usdtRate: 1.35 };
+        app.settlementData = { session: this.currentSession, positions, floatCash, floatUsdt, entries, carries, players, usdtRate: FALLBACK_USDT_SGD };
 
         // Wire the USDT/SGD rate input — live fetch + manual override.
         const rateInp = document.getElementById('settlementUsdtRate');
         const rateLive = document.getElementById('settlementRateLive');
         if (rateInp) {
-          rateInp.value = (1.35).toFixed(4); // sensible default while live rate fetches
+          rateInp.value = FALLBACK_USDT_SGD.toFixed(4); // sensible default while live rate fetches
           rateInp.oninput = () => {
             const v = parseFloat(rateInp.value);
             if (v && v > 0) { app.settlementData.usdtRate = v; app.updateSettlementProjection(); }
@@ -6762,7 +6820,7 @@
             }
           } else if (method === 'float_usdt') {
             // Direct USDT payout (no SGD swap). USDT = SGD / rate.
-            const rate = app.settlementData.usdtRate || 1.35;
+            const rate = app.settlementData?.usdtRate || FALLBACK_USDT_SGD;
             const usdt = abs / rate;
             if (amt > 0) {
               // Winner paid in USDT from float — float USDT goes down
@@ -6986,7 +7044,7 @@
           } else if (method === 'float_usdt') {
             // Direct USDT payout — no SGD swap leg. Float USDT decreases (or
             // increases for losers) by SGD/rate. Rate captured at commit time.
-            const rate = app.settlementData?.usdtRate || 1.35;
+            const rate = app.settlementData?.usdtRate || FALLBACK_USDT_SGD;
             const absSgd = Math.abs(amt);
             const absUsdt = absSgd / rate;
             if (amt > 0) {
@@ -8582,7 +8640,7 @@
         document.getElementById('modalTitle').textContent = 'Delete Carry?';
         document.getElementById('modalBody').innerHTML = `
           <div style="padding: 8px 0;">
-            <div style="margin-bottom: 8px;">Delete <strong>${name}</strong>'s carry of <strong>${amt}</strong>?</div>
+            <div style="margin-bottom: 8px;">Delete <strong>${this._esc(name)}</strong>'s carry of <strong>${amt}</strong>?</div>
             <div style="font-size: 12px; color: var(--text-secondary);">This soft-deletes the record. Sarah can restore it from Settings &gt; Deleted Records.</div>
           </div>
         `;
@@ -8689,7 +8747,7 @@
             </div>
             <div class="form-group">
               <label class="form-label">Rate (SGD per USDT)</label>
-              <input type="number" class="form-input" id="rateUsed" placeholder="loading…" step="0.0001" inputmode="decimal" value="1.35">
+              <input type="number" class="form-input" id="rateUsed" placeholder="loading…" step="0.0001" inputmode="decimal" value="${FALLBACK_USDT_SGD.toFixed(4)}">
               <div id="rateHint" style="font-size:11px; color:var(--text-secondary); margin-top:4px;">Auto-computes USDT below</div>
             </div>
             <div class="form-group">
@@ -8858,9 +8916,10 @@
         if (!playerId) { this.showToast('Select a player'); return; }
         if (isNaN(amount) || amount === 0) { this.showToast('Enter a non-zero amount'); return; }
         const carry = {
-          id: 'carry_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+          id: crypto.randomUUID(),  // was Date.now()+random — collidable across devices (BE-6)
           player_id: playerId,
           origin_session_id: null,
+          origin_entry_id: null,
           amount_sgd: amount,
           status: 'open',
           note: note || null,
@@ -9332,8 +9391,8 @@
           item.onclick = () => this.editPlayer(player);
           item.innerHTML = `
             <div class="carry-item-left">
-              <div class="carry-item-name">${roleBadge} ${player.name}</div>
-              <div class="carry-item-meta">${player.role} · ${player.preferred_payout} ${player.notes ? '· ' + player.notes : ''}</div>
+              <div class="carry-item-name">${roleBadge} ${this._esc(player.name)}</div>
+              <div class="carry-item-meta">${player.role} · ${player.preferred_payout} ${player.notes ? '· ' + this._esc(player.notes) : ''}</div>
             </div>
             <div style="color: var(--text-secondary); font-size: 14px;">${payoutBadge}</div>
           `;
@@ -9384,7 +9443,7 @@
         document.getElementById('modalBody').innerHTML = `
           <div class="form-group">
             <label class="form-label">Name</label>
-            <input type="text" class="form-input" id="editPlayerName" value="${player.name}">
+            <input type="text" class="form-input" id="editPlayerName" value="${this._esc(player.name)}">
           </div>
           <div class="form-group">
             <label class="form-label">Role</label>
@@ -9405,28 +9464,37 @@
           ${avoidHtml}
           <div class="form-group">
             <label class="form-label">Notes</label>
-            <input type="text" class="form-input" id="editPlayerNotes" value="${player.notes || ''}">
+            <input type="text" class="form-input" id="editPlayerNotes" value="${this._esc(player.notes || '')}">
           </div>
         `;
         document.getElementById('modalFooter').innerHTML = `
           <button class="btn btn-danger" onclick="(async () => { if(confirm('Delete ${player.name}?')) { await db.softDelete('players', '${player.id}'); app.showToast('Deleted'); app.closeModal(); app.renderPlayersScreen(); } })()">Delete</button>
           <button class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
-          <button class="btn btn-primary" onclick="(async () => {
-            const p = await db.get('players', '${player.id}');
-            p.name = document.getElementById('editPlayerName').value.trim();
-            p.role = document.getElementById('editPlayerRole').value;
-            p.preferred_payout = document.getElementById('editPlayerPayout').value;
-            p.notes = document.getElementById('editPlayerNotes').value;
-            const avoidChecks = document.querySelectorAll('#modalBody [data-avoid-id]:checked');
-            p.avoid_player_ids = Array.from(avoidChecks).map(cb => cb.dataset.avoidId);
-            p.updated_at = new Date().toISOString();
-            await db.put('players', p);
-            app.showToast('Updated');
-            app.closeModal();
-            app.renderPlayersScreen();
-          })()">Save</button>
+          <button class="btn btn-primary" onclick="app.saveEditedPlayer('${player.id}')">Save</button>
         `;
         modal.classList.add('show');
+      },
+
+      // Save edits to an existing player with validation (DI-6): name required,
+      // and warn on a duplicate name (the source of the p-darren/p-eric/... dupes).
+      async saveEditedPlayer(playerId) {
+        const p = await db.get('players', playerId);
+        if (!p) return;
+        const nm = document.getElementById('editPlayerName').value.trim();
+        if (!nm) { this.showToast('Name is required'); return; }
+        const dup = (await db.getAll('players')).find(x => x.id !== p.id && (x.name || '').toLowerCase() === nm.toLowerCase());
+        if (dup && !confirm(`A player named "${nm}" already exists. Save anyway?`)) return;
+        p.name = nm;
+        p.role = document.getElementById('editPlayerRole').value;
+        p.preferred_payout = document.getElementById('editPlayerPayout').value;
+        p.notes = document.getElementById('editPlayerNotes').value;
+        const avoidChecks = document.querySelectorAll('#modalBody [data-avoid-id]:checked');
+        p.avoid_player_ids = Array.from(avoidChecks).map(cb => cb.dataset.avoidId);
+        p.updated_at = new Date().toISOString();
+        await db.put('players', p);
+        this.showToast('Updated');
+        this.closeModal();
+        this.renderPlayersScreen();
       },
 
       async renderSettingsScreen() {
@@ -10143,17 +10211,45 @@
       input.accept = '.json';
       input.onchange = async (e) => {
         const file = e.target.files[0];
-        const text = await file.text();
-        const backup = JSON.parse(text);
-        for (const player of backup.players) await db.put('players', player);
-        for (const session of backup.sessions) await db.put('sessions', session);
-        for (const entry of backup.sessionEntries) await db.put('sessionEntries', entry);
-        for (const tx of backup.floatTransactions) await db.put('floatTransactions', tx);
-        for (const carry of backup.carryBalances) await db.put('carryBalances', carry);
-        if (backup.tablePayments) for (const tp of backup.tablePayments) await db.put('tablePayments', tp);
-        if (backup.dealerStashTransactions) for (const ds of backup.dealerStashTransactions) await db.put('dealerStashTransactions', ds);
-        app.showToast('Import complete');
-        app.renderDashboard();
+        if (!file) return;
+        try {
+          const text = await file.text();
+          let backup;
+          try {
+            backup = JSON.parse(text);
+          } catch (parseErr) {
+            app.showToast('Not a valid JSON file');
+            return;
+          }
+          // Shape validation — every store we iterate must be an array (or
+          // absent). A valid-JSON-but-wrong-shape file must not clobber data
+          // halfway through (DI-2).
+          const storeKeys = ['players', 'sessions', 'sessionEntries', 'floatTransactions', 'carryBalances', 'tablePayments', 'dealerStashTransactions'];
+          if (!backup || typeof backup !== 'object') { app.showToast('Invalid backup file'); return; }
+          for (const k of storeKeys) {
+            if (backup[k] !== undefined && !Array.isArray(backup[k])) { app.showToast(`Invalid backup: "${k}" is not a list`); return; }
+          }
+          if (!Array.isArray(backup.players) || !Array.isArray(backup.sessions) || !Array.isArray(backup.sessionEntries)) {
+            app.showToast('Invalid backup: missing players/sessions/entries');
+            return;
+          }
+          const counts = storeKeys.map(k => `${(backup[k] || []).length} ${k}`).join(', ');
+          if (!confirm(`Import will overwrite/merge by id:\n${counts}\n\nThis cannot be undone. Continue?`)) return;
+
+          let written = 0, skipped = 0;
+          for (const k of storeKeys) {
+            for (const rec of (backup[k] || [])) {
+              if (!rec || !rec.id) { skipped++; continue; }
+              await db.put(k, rec);
+              written++;
+            }
+          }
+          app.showToast(`Import complete — ${written} records${skipped ? `, ${skipped} skipped (no id)` : ''}`);
+          app.renderDashboard();
+        } catch (err) {
+          console.error('[import] failed:', err);
+          app.showToast('Import failed — ' + (err?.message || 'unknown error'));
+        }
       };
       input.click();
     };
@@ -10313,6 +10409,26 @@
       `;
       modal.classList.add('show');
     };
+
+    // ── Modal dismissal: Escape key + tap-outside (UI-3) ─────────────────
+    // Every modal has a Cancel/Close button, but mobile users expect to tap the
+    // dimmed backdrop to dismiss, and keyboard users expect Escape.
+    (function wireModalDismissal() {
+      const modal = document.getElementById('modal');
+      if (modal) {
+        // Tap the dimmed overlay (not the content) to close.
+        modal.addEventListener('click', (e) => {
+          if (e.target === modal && typeof app !== 'undefined' && app.closeModal) app.closeModal();
+        });
+      }
+      document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape' || typeof app === 'undefined') return;
+        const m = document.getElementById('modal');
+        const sheet = document.getElementById('modalBackdrop');
+        if (m && m.classList.contains('show')) { app.closeModal && app.closeModal(); }
+        else if (sheet && sheet.classList.contains('show')) { app.closeActionSheet && app.closeActionSheet(); }
+      });
+    })();
 
     // ============================================================================
     // Initialize
