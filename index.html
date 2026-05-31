@@ -4711,9 +4711,66 @@
       // outside the app).
       // When this winner records peer-payments from losers, each loser's open
       // session-linked carry is auto-reduced by that amount.
+      // Reverse every ledger side-effect a prior cashout of this entry wrote.
+      // Cashouts tag their float/stash/peer rows with origin_entry_id, so an
+      // edit or undo can fully unwind them before re-writing (otherwise the
+      // float/stash drift by the prior amount on every correction — see UC-2).
+      // Peer payments also reduced a loser's carry via _reduceLoserCarryBy;
+      // we add that amount back so the counterparty's debt is restored.
+      async _reverseCashoutLedger(entryId, sessionId) {
+        const now = new Date().toISOString();
+        // Restore loser carries that this entry's peer payments had reduced,
+        // then soft-delete those peer payment rows.
+        const peerPmts = (await db.getAll('tablePayments'))
+          .filter(tp => tp.origin_entry_id === entryId && !tp.deleted_at);
+        for (const tp of peerPmts) {
+          if (tp.from_source === 'player' && tp.from_player_id) {
+            await this._restoreLoserCarryBy(tp.from_player_id, sessionId ?? tp.session_id, tp.amount);
+          }
+          await db.softDelete('tablePayments', tp.id);
+        }
+        // Soft-delete float + stash rows written by this entry's cashout.
+        const floatRows = (await db.getAll('floatTransactions'))
+          .filter(t => t.origin_entry_id === entryId && !t.deleted_at);
+        for (const t of floatRows) await db.softDelete('floatTransactions', t.id);
+        const stashRows = (await db.getAll('dealerStashTransactions'))
+          .filter(t => t.origin_entry_id === entryId && !t.deleted_at);
+        for (const t of stashRows) await db.softDelete('dealerStashTransactions', t.id);
+      },
+
+      // Inverse of _reduceLoserCarryBy: add `amt` back onto a loser's carry that
+      // was previously reduced (or cleared) by a peer payment we're now undoing.
+      async _restoreLoserCarryBy(playerId, sessionId, amt) {
+        if (!playerId || !sessionId || amt <= 0) return;
+        const carries = (await db.getAll('carryBalances')).filter(c =>
+          c.player_id === playerId &&
+          c.origin_session_id === sessionId &&
+          c.amount_sgd <= 0 &&
+          !c.deleted_at);
+        if (carries.length === 0) return;
+        // Re-grow the carry closest to zero first (mirror of the reduce order).
+        carries.sort((a, b) => b.amount_sgd - a.amount_sgd); // least negative first
+        const now = new Date().toISOString();
+        const c = carries[0];
+        c.amount_sgd -= amt; // more negative → restore the debt
+        if (c.status === 'cleared' && c.cleared_via === 'peer-payment') {
+          c.status = 'open';
+          c.cleared_at = null;
+          c.cleared_via = null;
+        }
+        c.note = (c.note || '') + ` · $${amt.toLocaleString()} peer payment reversed`;
+        c.updated_at = now;
+        await db.put('carryBalances', c);
+      },
+
       async commitCashout(entryId, buyin, fullySettled = false) {
         const cashout = this._coReadAmt('coAmount');
         if (cashout < 0) return;
+        // Re-entrancy guard: a laggy double-tap must not write two sets of
+        // money records (BE-2). Cleared in the finally below.
+        if (this._committing) return;
+        this._committing = true;
+        try {
         const notes = (document.getElementById('coNotes')?.value || '').trim();
 
         const entry = await db.get('sessionEntries', entryId);
@@ -4738,8 +4795,15 @@
           prevNotes: entry.notes,
         };
 
-        // Reconcile: if this is an EDIT, soft-delete any previously linked carry
-        // (we'll recreate a fresh one if "park" is allocated again).
+        // Reconcile: if this is an EDIT, fully unwind the previous cashout's
+        // ledger side-effects (float/stash/peer rows + any loser-carry it
+        // reduced) and soft-delete the previously linked carry. We then re-write
+        // a fresh set below. Without this, every edit duplicates the float/stash
+        // movement (UC-2).
+        const isEdit = entry.cash_out !== null && entry.cash_out !== undefined;
+        if (isEdit) {
+          await this._reverseCashoutLedger(entryId, session.id);
+        }
         if (entry.linked_carry_id) {
           await db.softDelete('carryBalances', entry.linked_carry_id);
           entry.linked_carry_id = null;
@@ -4770,6 +4834,7 @@
             await db.put('tablePayments', {
               id: crypto.randomUUID(),
               session_id: session.id,
+              origin_entry_id: entryId,
               timestamp: now,
               type: 'TABLE_PAYMENT',
               from_source: 'player',
@@ -4787,6 +4852,7 @@
             await db.put('floatTransactions', {
               id: crypto.randomUUID(),
               session_id: session.id,
+              origin_entry_id: entryId,
               timestamp: now,
               type: isWin ? 'SETTLEMENT_CASH_OUT' : 'SETTLEMENT_CASH_IN',
               amount_sgd: isWin ? -amt : amt,
@@ -4802,6 +4868,7 @@
             await db.put('floatTransactions', {
               id: crypto.randomUUID(),
               session_id: session.id,
+              origin_entry_id: entryId,
               timestamp: now,
               type: isWin ? 'USDT_PAYOUT' : 'USDT_COLLECTION',
               amount_sgd: 0,
@@ -4816,6 +4883,7 @@
             await db.put('dealerStashTransactions', {
               id: crypto.randomUUID(),
               session_id: session.id,
+              origin_entry_id: entryId,
               timestamp: now,
               type: isWin ? 'PAYOUT' : 'COLLECT',
               amount_sgd: isWin ? -amt : amt,
@@ -4877,6 +4945,9 @@
           : (entry.linked_carry_id ? `Cashout saved · $${remainder.toLocaleString()} parked as carry` : 'Cashout saved');
         this.showUndoToast(toastMsg);
         this.autoSync();
+        } finally {
+          this._committing = false;
+        }
       },
 
       // Reduce a (loser) player's open session-linked carry by `amt`. Called
@@ -4967,6 +5038,9 @@
       async undoCashOut(entryId) {
         const entry = await db.get('sessionEntries', entryId);
         if (!entry) return;
+        // Fully unwind the cashout's ledger side-effects: float/stash/peer rows
+        // it wrote, plus any loser carry its peer payments reduced (UC-2).
+        await this._reverseCashoutLedger(entryId, entry.session_id);
         // Soft-delete any linked carry so reverting fully unwinds the cashout
         if (entry.linked_carry_id) {
           await db.softDelete('carryBalances', entry.linked_carry_id);
@@ -6486,8 +6560,18 @@
 
         // Compute positions
         const positions = entries.map(entry => {
+          // An entry already settled in-session via the Cash Out allocator
+          // ('allocated') or marked settled-outside-app ('fully_settled') has
+          // ALREADY moved its money (float/stash/peer rows written, remainder
+          // parked as its own carry). Re-settling it here would double-pay
+          // (UC-1/BE-1), so treat it as fully handled: remaining = 0.
+          const handled = entry.settlement_method === 'allocated' || entry.settlement_method === 'fully_settled';
+
+          // Exclude carries that originated from THIS entry's own in-session
+          // cashout — they already represent the unpaid remainder and must not
+          // be re-added on top of net_pl.
           const playerCarries = carries
-            .filter(c => c.player_id === entry.player_id && c.status === 'open')
+            .filter(c => c.player_id === entry.player_id && c.status === 'open' && c.origin_entry_id !== entry.id)
             .reduce((sum, c) => sum + c.amount_sgd, 0);
           const netPosition = entry.net_pl + playerCarries;
 
@@ -6497,7 +6581,7 @@
           const paid = tpPaidOut[entry.player_id] || 0;
           const received = tpReceived[entry.player_id] || 0;
           const alreadySettled = received - paid; // positive means net received, negative means net paid out
-          const remaining = netPosition - alreadySettled;
+          const remaining = handled ? 0 : netPosition - alreadySettled;
 
           return {
             ...entry,
@@ -6506,6 +6590,7 @@
             net_position: netPosition,
             already_settled: alreadySettled,
             remaining,
+            handled,
           };
         });
 
@@ -6585,7 +6670,7 @@
                   <button class="btn btn-secondary" data-pos-id="${pos.id}" data-method="float_sgd" onclick="app.setSettlementMethod('${pos.id}', 'float_sgd')" style="font-size: 12px;">Float SGD</button>
                   <button class="btn btn-secondary" data-pos-id="${pos.id}" data-method="float_usdt" onclick="app.setSettlementMethod('${pos.id}', 'float_usdt')" style="font-size: 12px;">Float USDT</button>
                 </div>
-              ` : '<div style="font-size: 12px; color: var(--accent-success); margin-top: 4px;">✓ Fully settled at table</div>'}
+              ` : `<div style="font-size: 12px; color: var(--accent-success); margin-top: 4px;">✓ ${pos.handled ? 'Settled during play' : 'Fully settled at table'}</div>`}
             `;
           }
           table.appendChild(row);
@@ -6640,6 +6725,7 @@
 
         for (const pos of positions) {
           if (pos.player?.role === 'bank' || pos.player?.role === 'dealer') continue;
+          if (pos.settlement_method === 'allocated' || pos.settlement_method === 'fully_settled') continue;
           const amt = pos.remaining !== undefined ? pos.remaining : pos.net_position;
           if (amt === 0) continue;
           const method = pos.settlement_method || 'park';
@@ -6752,13 +6838,23 @@
 
       async commitSettlement() {
         if (!app.settlementData) return;
+        // Re-entrancy guard — a double-tap must not re-create the dealer take,
+        // Derrick's float entry, and a second set of parked carries (BE-2).
+        if (this._committing) return;
+        this._committing = true;
+        try {
         const { session, positions, floatCash, floatUsdt, carries, players } = app.settlementData;
 
         const derrick = positions.find(p => p.player?.role === 'bank');
         const sarah = positions.find(p => p.player?.role === 'dealer');
 
-        // Clear open carries for tonight's players (they're netted into net_position)
+        // Clear open carries for tonight's players (they're netted into net_position).
+        // EXCEPT carries parked by THIS session's own in-session cashouts — those
+        // were excluded from net_position (UC-1) and must stay open to be settled
+        // later, or the parked remainder would be silently wiped.
+        const tonightEntryIds = new Set(positions.map(p => p.id));
         for (const carry of carries) {
+          if (carry.origin_entry_id && tonightEntryIds.has(carry.origin_entry_id)) continue;
           if (positions.some(p => p.player_id === carry.player_id)) {
             await db.softDelete('carryBalances', carry.id);
           }
@@ -6805,6 +6901,10 @@
         // Use `remaining` (net_position minus table payments already made)
         for (const pos of positions) {
           if (pos.player?.role === 'bank' || pos.player?.role === 'dealer') continue;
+          // Already settled in-session via the Cash Out allocator (or marked
+          // settled outside the app) — its money already moved. Skip to avoid
+          // double-paying (UC-1/BE-1).
+          if (pos.settlement_method === 'allocated' || pos.settlement_method === 'fully_settled') continue;
           const amt = pos.remaining !== undefined ? pos.remaining : pos.net_position;
           if (amt === 0) continue;
           const method = pos.settlement_method || 'park';
@@ -6912,6 +7012,9 @@
         this.showToast('Settlement committed');
         this.currentSession = null;
         this.showScreen('dashboardScreen');
+        } finally {
+          this._committing = false;
+        }
       },
 
       async renderHistoryScreen() {
@@ -8656,6 +8759,10 @@
         const rate = parseFloat(document.getElementById('rateUsed').value) || 0;
         const note = document.getElementById('clearedNote').value || carry.note;
         if (!usdt || !rate) { this.showToast('Enter USDT amount and rate'); return; }
+        // Re-entrancy guard — double-tap must not write two float USDT rows (BE-2).
+        if (this._committing) return;
+        this._committing = true;
+        try {
 
         carry.status = 'cleared';
         carry.cleared_at = new Date().toISOString();
@@ -8688,6 +8795,9 @@
         this.showToast(`${name} cleared via USDT`);
         this.closeModal();
         this.renderCarriesScreen();
+        } finally {
+          this._committing = false;
+        }
       },
 
       async showNewCarryModal() {
@@ -9110,8 +9220,25 @@
         }
 
         const isWithdraw = type === 'withdraw';
+
+        // Overdraw guard (DI-5): block a withdrawal larger than the current
+        // float balance for that currency — a physical cash bankroll can't go
+        // negative. Owner can still confirm an explicit overdraw if intended.
+        if (isWithdraw) {
+          const ftx = await db.getAll('floatTransactions');
+          const bal = ftx.reduce((s, t) => s + (currency === 'sgd' ? (t.amount_sgd || 0) : (t.amount_usdt || 0)), 0);
+          if (amount > bal) {
+            const cur = currency.toUpperCase();
+            const balStr = currency === 'usdt' ? bal.toLocaleString() : '$' + bal.toLocaleString();
+            if (!confirm(`Float only holds ${balStr} ${cur}. Withdrawing $${amount.toLocaleString()} ${cur} would make it negative. Continue anyway?`)) return;
+          }
+        }
+
         const adjustedAmount = isWithdraw ? -amount : amount;
         const doAction = async () => {
+          if (this._committing) return;
+          this._committing = true;
+          try {
           const tx = {
             id: crypto.randomUUID(),
             session_id: null,
@@ -9129,6 +9256,9 @@
           this.showToast(isWithdraw ? 'Float withdrawn' : 'Amount added to float');
           this.closeModal();
           this.renderFloatScreen();
+          } finally {
+            this._committing = false;
+          }
         };
 
         if (!this.isOwner()) {
