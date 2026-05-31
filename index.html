@@ -16,6 +16,7 @@
        Config keys are public-by-design (Web SDK); access is gated by RTDB security rules. -->
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
   <style>
     * {
       margin: 0;
@@ -34,6 +35,8 @@
       --bg-secondary: #1a1a2e;
       --bg-tertiary: #16213e;
       --accent-primary: #e94560;
+      --accent-brand: #e8d5a3;       /* the gold from the login logo — primary CTAs + active state */
+      --accent-brand-ink: #1a1a2e;   /* dark text for legibility on gold */
       --accent-success: #4ecca3;
       --accent-warning: #ffd93d;
       --accent-danger: #ff6b6b;
@@ -357,23 +360,26 @@
 
     .tab-button {
       flex: 1;
-      padding: 7px 0 6px;   /* compact — was 14px */
+      min-width: 0;          /* allow flex children to shrink below content width */
+      padding: 7px 2px 6px;  /* compact — was 14px */
       border: none;
       background: none;
       color: var(--text-secondary);
       cursor: pointer;
-      font-size: 11px;       /* was 14px */
+      font-size: 10px;       /* was 11px — clears "Dashboard"/"Settings" at 375px */
       font-weight: 600;
+      letter-spacing: -0.2px;
       display: flex;
       flex-direction: column;
       align-items: center;
       gap: 3px;              /* was 6px */
       transition: all 0.2s;
       touch-action: manipulation;
+      white-space: nowrap;   /* labels stay one line; min-width:0 + small font fit at 375px */
     }
 
     .tab-button.active {
-      color: var(--accent-primary);
+      color: var(--accent-brand);
     }
 
     .tab-icon {
@@ -840,8 +846,9 @@
     }
 
     .btn-primary {
-      background: var(--accent-primary);
-      color: white;
+      background: var(--accent-brand);
+      color: var(--accent-brand-ink);
+      font-weight: 700;
     }
 
     .btn-secondary {
@@ -1156,9 +1163,10 @@
     }
 
     .filter-chip.active {
-      background: var(--accent-primary);
-      color: white;
-      border-color: var(--accent-primary);
+      background: var(--accent-brand);
+      color: var(--accent-brand-ink);
+      border-color: var(--accent-brand);
+      font-weight: 700;
     }
 
     .transaction-list {
@@ -2122,6 +2130,21 @@
         try {
           if (!firebase.apps.length) firebase.initializeApp(config);
         } catch(e) { console.warn('[cloud] init error:', e); return; }
+
+        // Authenticate before any DB access. The RTDB security rules require
+        // auth != null, so without this every read/write is permission-denied.
+        // Anonymous auth gives each device a stable uid with zero user friction.
+        // If auth fails (e.g. Anonymous provider not enabled in the Firebase
+        // console), we log and bail to local-only rather than hanging.
+        try {
+          if (firebase.auth && !firebase.auth().currentUser) {
+            await this._withTimeout(firebase.auth().signInAnonymously(), 10000, 'auth');
+          }
+        } catch(e) {
+          console.warn('[cloud] anonymous auth failed — running local-only. Enable Anonymous sign-in in the Firebase console.', e);
+          return;
+        }
+
         this._fb = firebase.database();
 
         // Connection status badge
@@ -4167,7 +4190,7 @@
           <button class="btn btn-danger btn-block" onclick="app.confirmRemovePlayer('${entry.id}', '${session.id}')">Remove Player</button>
           ` : `
           <button class="btn btn-primary btn-block" onclick="app.showCashOutModal('${entry.id}')">✏️ Edit Cashout / Settlement</button>
-          <button class="btn btn-secondary btn-block" onclick="app.undoCashOut('${entry.id}')">↩ Cancel Cashout</button>
+          <button class="btn btn-secondary btn-block" onclick="app.cancelCashout('${entry.id}')">↩ Cancel Cashout</button>
           `}
         `;
         document.getElementById('actionSheet').classList.add('show');
@@ -6921,7 +6944,7 @@
               cleared_via: null,
               rate_used: null,
               usdt_amount: null,
-              note: `Parked from ${new Date(session.date).toLocaleDateString()}`,
+              note: `Parked from ${this._fmtDate(session.date)}`,
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
               deleted_at: null,
@@ -8452,7 +8475,7 @@
             item.innerHTML = `
               <div class="carry-item-left">
                 <div class="carry-item-name">${player?.name || 'Unknown'}</div>
-                <div class="carry-item-meta">${this._carryClearedLabel(carry.cleared_via)} on ${new Date(carry.cleared_at).toLocaleDateString()}</div>
+                <div class="carry-item-meta">${this._carryClearedLabel(carry.cleared_via)} on ${this._fmtDate(carry.cleared_at)}</div>
               </div>
               <div class="carry-item-amount ${carry.amount_sgd > 0 ? 'positive' : 'negative'}">
                 ${carry.amount_sgd > 0 ? '+' : '-'}$${Math.abs(carry.amount_sgd).toLocaleString()}
@@ -9122,33 +9145,59 @@
                 const amt = tx.amount_sgd;
                 return `
                   <div style="display:flex; justify-content:space-between; align-items:center; padding:5px 0; border-bottom:1px solid #ffffff0a; font-size:13px;">
-                    <span style="color:var(--text-secondary);">${icon} ${lbl} · ${new Date(tx.timestamp).toLocaleDateString()}</span>
+                    <span style="color:var(--text-secondary);">${icon} ${lbl} · ${this._fmtDate(tx.timestamp)}</span>
                     <span style="font-weight:700; color:${amt >= 0 ? 'var(--accent-success)' : amt < 0 ? 'var(--accent-danger)' : 'var(--text-secondary)'};">${amt > 0 ? '+' : amt < 0 ? '-' : ''}${amt !== 0 ? '$' + Math.abs(amt).toLocaleString() : '—'}</span>
                   </div>`;
               }).join('');
         }
 
-        // Render float filters
+        // Render float filters. Only "All" starts active; tapping a chip
+        // actually filters the ledger (previously every chip rendered active
+        // and the click did nothing — UI-1).
         const filters = document.getElementById('filterChips');
         filters.innerHTML = '';
         const types = ['All', 'Cash In', 'Cash Out', 'USDT', 'Conversions'];
+        this._floatTxList = [...transactions].reverse();
+        this._floatPlayers = players;
         for (const type of types) {
           const chip = document.createElement('button');
-          chip.className = 'filter-chip active';
+          chip.className = 'filter-chip' + (type === 'All' ? ' active' : '');
           chip.textContent = type;
           chip.onclick = () => {
             filters.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
             chip.classList.add('active');
+            this._renderFloatTxList(type);
           };
           filters.appendChild(chip);
         }
 
-        // Render float transaction list
-        const list = document.getElementById('transactionList');
-        list.innerHTML = '';
+        this._renderFloatTxList('All');
+      },
 
-        const sorted = [...transactions].reverse();
-        for (const tx of sorted) {
+      // Map a filter-chip label to a predicate over a float transaction, then
+      // render the (already reverse-sorted) ledger filtered by it.
+      _renderFloatTxList(filter) {
+        const list = document.getElementById('transactionList');
+        if (!list) return;
+        list.innerHTML = '';
+        const players = this._floatPlayers || [];
+        const isConversion = (t) => t.type === 'USDT_SWAP_CASH_IN' || t.type === 'USDT_SWAP_CASH_OUT';
+        const matches = (tx) => {
+          switch (filter) {
+            case 'Cash In':      return (tx.amount_sgd || 0) > 0;
+            case 'Cash Out':     return (tx.amount_sgd || 0) < 0;
+            case 'USDT':         return (tx.amount_usdt || 0) !== 0;
+            case 'Conversions':  return isConversion(tx);
+            case 'All':
+            default:             return true;
+          }
+        };
+        const rows = (this._floatTxList || []).filter(matches);
+        if (rows.length === 0) {
+          list.innerHTML = `<div style="text-align:center; color:var(--text-secondary); padding:20px; font-size:13px;">No ${filter === 'All' ? '' : filter.toLowerCase() + ' '}transactions</div>`;
+          return;
+        }
+        for (const tx of rows) {
           const player = players.find(p => p.id === tx.player_id);
           const item = document.createElement('div');
           item.className = 'transaction-item';
@@ -9160,13 +9209,13 @@
           // a parseable date.
           const tsRaw = tx.timestamp || tx.created_at || null;
           const tsDate = tsRaw ? new Date(tsRaw) : null;
-          const tsLabel = tsDate && !isNaN(tsDate.getTime()) ? tsDate.toLocaleDateString() : '—';
+          const tsLabel = tsDate && !isNaN(tsDate.getTime()) ? this._fmtDate(tsDate) : '—';
 
           item.innerHTML = `
             <div class="transaction-icon">${icon}</div>
             <div class="transaction-details">
               <div class="transaction-label">${txLabel}</div>
-              <div class="transaction-meta">${tsLabel} ${player ? '• ' + player.name : ''}</div>
+              <div class="transaction-meta">${tsLabel} ${player ? '• ' + this._esc(player.name) : ''}</div>
             </div>
             <div>
               ${tx.amount_sgd !== 0 && tx.amount_sgd !== null ? `<div class="transaction-amount ${tx.amount_sgd > 0 ? 'positive' : 'negative'}">${tx.amount_sgd > 0 ? '+' : ''}$${Math.abs(tx.amount_sgd).toLocaleString()}</div>` : ''}
@@ -9533,6 +9582,16 @@
       // Single source of truth — used by Player Action sheet, Cash Out tab,
       // Session Detail card, and any future caller. Falls back to the raw
       // slug for unknown values so historic / experimental rows still render.
+      // Consistent, unambiguous date formatting across the app (UI-4). Bare
+      // toLocaleDateString() renders M/D/Y on US devices and D/M/Y elsewhere,
+      // so the same date showed differently on different screens. en-GB gives
+      // "10 Apr 2026" everywhere. Pass opts to override (e.g. add weekday).
+      _fmtDate(d, opts) {
+        const date = (d instanceof Date) ? d : new Date(d);
+        if (isNaN(date.getTime())) return '—';
+        return date.toLocaleDateString('en-GB', opts || { day: 'numeric', month: 'short', year: 'numeric' });
+      },
+
       // Friendly description of how a carry was cleared (carry.cleared_via).
       // Handles the 'player:<id>' form and the special 'external' (settled
       // outside the app) marker.
@@ -9863,7 +9922,7 @@
               ${carries.map(c => {
                 const p = players.find(x => x.id === c.player_id);
                 const amt = `${c.amount_sgd > 0 ? '+' : ''}$${Math.abs(c.amount_sgd).toLocaleString()}`;
-                const deletedDate = new Date(c.deleted_at).toLocaleDateString();
+                const deletedDate = this._fmtDate(c.deleted_at);
                 return `
                   <div style="display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--border-color);">
                     <div style="flex:1;">
@@ -10035,10 +10094,18 @@
 
     document.getElementById('exportCsvBtn').onclick = async () => {
       const transactions = await db.getAll('floatTransactions');
+      // Neutralize spreadsheet formula injection (DI-7): a name/note starting
+      // with = + - @ becomes a live formula when opened in Excel/Sheets. Prefix
+      // with ' and escape embedded quotes.
+      const safe = (s) => {
+        s = String(s ?? '');
+        if (/^[=+\-@]/.test(s)) s = "'" + s;
+        return '"' + s.replace(/"/g, '""') + '"';
+      };
       let csv = 'Date,Type,Amount (SGD),Amount (USDT),Player,Note\n';
       for (const tx of transactions) {
         const player = await app.getPlayer(tx.player_id);
-        csv += `${new Date(tx.timestamp).toLocaleDateString()},"${tx.type}",${tx.amount_sgd},${tx.amount_usdt},"${player?.name || ''}","${tx.note || ''}"\n`;
+        csv += `${app._fmtDate(tx.timestamp)},${safe(tx.type)},${tx.amount_sgd},${tx.amount_usdt},${safe(player?.name || '')},${safe(tx.note || '')}\n`;
       }
       const blob = new Blob([csv], { type: 'text/csv' });
       const url = URL.createObjectURL(blob);
