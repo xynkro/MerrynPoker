@@ -41,7 +41,7 @@
       --accent-warning: #ffd93d;
       --accent-danger: #ff6b6b;
       --text-primary: #f0f0f0;
-      --text-secondary: #8892b0;
+      --text-secondary: #9aa6c4;   /* lifted from #8892b0 for AA contrast on tinted bgs (UI-8) */
       --border-color: #2a2a4a;
       --border-radius-card: 12px;
       --border-radius-btn: 8px;
@@ -1151,7 +1151,8 @@
     }
 
     .filter-chip {
-      padding: 6px 12px;
+      padding: 9px 14px;     /* ~40px tall + row gap → ≥44px hit slop (UI-7) */
+      min-height: 38px;
       border: 1px solid var(--border-color);
       background: transparent;
       color: var(--text-secondary);
@@ -1756,10 +1757,10 @@
             <div id="stashOwesFloat" style="display:none; padding:6px 10px; margin-bottom:10px; background:var(--accent-warning)18; border:1px solid var(--accent-warning)44; border-radius:8px; font-size:12px; color:var(--accent-warning); font-weight:700; text-align:center;"></div>
             <div id="floatStashList" style="margin-bottom: 10px; max-height: 160px; overflow-y: auto;"></div>
             <div style="display:flex; gap:6px; flex-wrap:wrap;">
-              <button onclick="app.showDealerStashAdjustModal('add')" style="flex:1; min-width:80px; padding:10px 4px; border-radius:8px; background:var(--accent-success)22; border:1px solid var(--accent-success)55; color:var(--accent-success); font-size:12px; font-weight:700; cursor:pointer; touch-action:manipulation;">+ Add</button>
-              <button onclick="app.showDealerStashAdjustModal('withdraw')" style="flex:1; min-width:80px; padding:10px 4px; border-radius:8px; background:var(--accent-danger)22; border:1px solid var(--accent-danger)55; color:var(--accent-danger); font-size:12px; font-weight:700; cursor:pointer; touch-action:manipulation;">− Withdraw</button>
-              <button onclick="app.showStashExpenseModal()" style="flex:1; min-width:90px; padding:10px 4px; border-radius:8px; background:var(--accent-warning)18; border:1px solid var(--accent-warning)44; color:var(--accent-warning); font-size:12px; font-weight:700; cursor:pointer; touch-action:manipulation;">💸 Expense</button>
-              <button id="stashRepayBtn" onclick="app.showStashRepayFloatModal()" style="display:none; flex:1; min-width:90px; padding:10px 4px; border-radius:8px; background:var(--accent-primary)22; border:1px solid var(--accent-primary)55; color:var(--accent-primary); font-size:12px; font-weight:700; cursor:pointer; touch-action:manipulation;">↪️ Repay Float</button>
+              <button onclick="app.showDealerStashAdjustModal('add')" style="flex:1; min-width:80px; padding:12px 4px; min-height:44px; border-radius:8px; background:var(--accent-success)22; border:1px solid var(--accent-success)55; color:var(--accent-success); font-size:12px; font-weight:700; cursor:pointer; touch-action:manipulation;">+ Add</button>
+              <button onclick="app.showDealerStashAdjustModal('withdraw')" style="flex:1; min-width:80px; padding:12px 4px; min-height:44px; border-radius:8px; background:var(--accent-danger)22; border:1px solid var(--accent-danger)55; color:var(--accent-danger); font-size:12px; font-weight:700; cursor:pointer; touch-action:manipulation;">− Withdraw</button>
+              <button onclick="app.showStashExpenseModal()" style="flex:1; min-width:90px; padding:12px 4px; min-height:44px; border-radius:8px; background:var(--accent-warning)18; border:1px solid var(--accent-warning)44; color:var(--accent-warning); font-size:12px; font-weight:700; cursor:pointer; touch-action:manipulation;">💸 Expense</button>
+              <button id="stashRepayBtn" onclick="app.showStashRepayFloatModal()" style="display:none; flex:1; min-width:90px; padding:12px 4px; min-height:44px; border-radius:8px; background:var(--accent-primary)22; border:1px solid var(--accent-primary)55; color:var(--accent-primary); font-size:12px; font-weight:700; cursor:pointer; touch-action:manipulation;">↪️ Repay Float</button>
             </div>
           </div>
 
@@ -2131,6 +2132,7 @@
       _connected: false,
       _suppressMirror: false,   // set true while applying an inbound remote change so we don't echo it back
       _renderPending: false,
+      _steadyState: false,      // true once the initial snapshot burst has settled (UC-3 warning gate)
       _initialSnapshot: {},     // store -> { id -> true } for records seen during initial subscription burst
 
       async init(config) {
@@ -2207,6 +2209,11 @@
           ref.on('child_changed', (snap) => this._handleRemote(store, snap.key, snap.val()));
           ref.on('child_removed', (snap) => this._handleRemoteRemove(store, snap.key));
         }
+        // The initial child_added burst (one event per existing record) all
+        // arrives within the first moment after subscribing. Suppress the
+        // concurrent-edit warning until that settles so first-load isn't noisy;
+        // after this, child_changed events are genuine remote edits (UC-3).
+        setTimeout(() => { this._steadyState = true; }, 4000);
       },
 
       async _wipeLocal() {
@@ -2324,6 +2331,22 @@
         const localTime  = local?.updated_at  ? new Date(local.updated_at).getTime()  : 0;
         const remoteTime = remote.updated_at  ? new Date(remote.updated_at).getTime() : 0;
         if (localTime >= remoteTime) return; // local is at least as fresh — ignore
+
+        // Concurrent-edit warning (UC-3): another device just overwrote a money
+        // record this device had set to a DIFFERENT value. The float/stash rows
+        // each device wrote have independent ids and both survive, so the human
+        // should re-check the float. Only warn in steady state (not the initial
+        // snapshot burst) and only for the money-bearing stores.
+        if (this._steadyState && local && (store === 'sessionEntries' || store === 'carryBalances')) {
+          const localVal  = store === 'sessionEntries' ? local.cash_out  : local.amount_sgd;
+          const remoteVal = store === 'sessionEntries' ? remote.cash_out : remote.amount_sgd;
+          const bothSettled = (localVal !== null && localVal !== undefined) && (remoteVal !== null && remoteVal !== undefined);
+          if (bothSettled && localVal !== remoteVal && !local.deleted_at && !remote.deleted_at) {
+            if (typeof app !== 'undefined' && app.showToast) {
+              app.showToast('⚠️ This entry was just edited on another device — re-check the float');
+            }
+          }
+        }
 
         this._suppressMirror = true;
         try {
@@ -7331,12 +7354,12 @@
             const totalColor = dealerTotal >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)';
             dealerStatsHtml = `
               <div style="background: linear-gradient(135deg, #1a2a1a, #0f1f0f); border: 1px solid var(--accent-success)55; border-radius: 12px; padding: 14px 16px; margin-bottom: 14px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;">
-                  <div>
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap: 10px; margin-bottom: 10px;">
+                  <div style="min-width: 0; flex: 1;">
                     <div style="font-size: 11px; color: var(--accent-success); text-transform: uppercase; letter-spacing: 1px; font-weight: 700;">🃏 Dealer Stats · Admin Only</div>
-                    <div style="font-size: 13px; color: var(--text-secondary); margin-top: 2px;">${dealerPlayer.name} — ${dealerSessions} sessions</div>
+                    <div style="font-size: 13px; color: var(--text-secondary); margin-top: 2px;">${this._esc(dealerPlayer.name)} — ${dealerSessions} sessions</div>
                   </div>
-                  <div style="text-align:right;">
+                  <div style="text-align:right; flex-shrink: 0; white-space: nowrap;">
                     <div style="font-size: 22px; font-weight: 800; color: ${totalColor};">${dealerTotal >= 0 ? '+' : '-'}$${Math.abs(dealerTotal).toLocaleString()}</div>
                     <div style="font-size: 11px; color: var(--text-secondary);">Total take</div>
                   </div>
