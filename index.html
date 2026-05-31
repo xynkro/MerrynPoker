@@ -1924,33 +1924,33 @@
     </div>
 
     <!-- Tab Navigation -->
-    <div class="tab-nav">
-      <button class="tab-button active" data-screen="dashboardScreen">
-        <span class="tab-icon">📊</span>
+    <div class="tab-nav" role="tablist" aria-label="Main navigation">
+      <button class="tab-button active" role="tab" aria-selected="true" aria-label="Dashboard" data-screen="dashboardScreen">
+        <span class="tab-icon" aria-hidden="true">📊</span>
         Dashboard
       </button>
-      <button class="tab-button" data-screen="sessionScreen">
-        <span class="tab-icon">🃏</span>
+      <button class="tab-button" role="tab" aria-selected="false" aria-label="Session" data-screen="sessionScreen">
+        <span class="tab-icon" aria-hidden="true">🃏</span>
         Session
       </button>
-      <button class="tab-button" data-screen="playerStatsScreen">
-        <span class="tab-icon">📈</span>
+      <button class="tab-button" role="tab" aria-selected="false" aria-label="Stats" data-screen="playerStatsScreen">
+        <span class="tab-icon" aria-hidden="true">📈</span>
         Stats
       </button>
-      <button class="tab-button" data-screen="historyScreen">
-        <span class="tab-icon">📜</span>
+      <button class="tab-button" role="tab" aria-selected="false" aria-label="History" data-screen="historyScreen">
+        <span class="tab-icon" aria-hidden="true">📜</span>
         History
       </button>
-      <button class="tab-button" data-screen="carriesScreen">
-        <span class="tab-icon">📋</span>
+      <button class="tab-button" role="tab" aria-selected="false" aria-label="Carries" data-screen="carriesScreen">
+        <span class="tab-icon" aria-hidden="true">📋</span>
         Carries
       </button>
-      <button class="tab-button" id="floatTab" data-screen="floatScreen">
-        <span class="tab-icon">💰</span>
+      <button class="tab-button" id="floatTab" role="tab" aria-selected="false" aria-label="Float" data-screen="floatScreen">
+        <span class="tab-icon" aria-hidden="true">💰</span>
         Float
       </button>
-      <button class="tab-button" id="settingsTab" data-screen="settingsScreen">
-        <span class="tab-icon">⚙️</span>
+      <button class="tab-button" id="settingsTab" role="tab" aria-selected="false" aria-label="Settings" data-screen="settingsScreen">
+        <span class="tab-icon" aria-hidden="true">⚙️</span>
         Settings
       </button>
     </div>
@@ -2313,11 +2313,22 @@
       _pendingMirrors: [],     // [{store, id}] writes that failed to reach the cloud
       _syncToastShown: false,  // debounce the "sync failed" toast during an outage
 
+      // Attach a SERVER-resolved timestamp to the cloud copy. ServerValue.TIMESTAMP
+      // is a write-only sentinel that the Firebase server replaces with its own
+      // clock — so ordering no longer depends on each device's (possibly skewed)
+      // local clock (BE-3). The sentinel is sent ONLY to the cloud; IndexedDB
+      // keeps the clean record. The resolved number comes back via the listener.
+      _withServerTs(record) {
+        const sv = (typeof firebase !== 'undefined' && firebase.database && firebase.database.ServerValue)
+          ? firebase.database.ServerValue.TIMESTAMP : null;
+        return sv ? { ...record, server_ts: sv } : record;
+      },
+
       async mirror(store, record) {
         if (this._suppressMirror) return;
         if (!this._fb || !record?.id) return;
         try {
-          await this._fb.ref(`${store}/${record.id}`).set(record);
+          await this._fb.ref(`${store}/${record.id}`).set(this._withServerTs(record));
         } catch(e) {
           // The write is safe in IndexedDB but never reached other devices.
           // Queue it for replay on reconnect and tell the user ONCE (DI-3) so a
@@ -2341,7 +2352,7 @@
         for (const { store, id } of queue) {
           try {
             const rec = await db.get(store, id);
-            if (rec) await this._fb.ref(`${store}/${id}`).set(rec);
+            if (rec) await this._fb.ref(`${store}/${id}`).set(this._withServerTs(rec));
           } catch(e) {
             console.warn('[cloud] replay failed:', store, id, e);
             this._pendingMirrors.push({ store, id });
@@ -2364,8 +2375,19 @@
         let local = null;
         try { local = await db.get(store, id); } catch(e) {}
 
-        const localTime  = local?.updated_at  ? new Date(local.updated_at).getTime()  : 0;
-        const remoteTime = remote.updated_at  ? new Date(remote.updated_at).getTime() : 0;
+        // Conflict ordering: prefer the SERVER-stamped timestamp when BOTH sides
+        // have one (server_ts is a number of ms, written by Firebase, immune to
+        // device clock skew — BE-3). Fall back to the client updated_at string
+        // for records written before this field existed or not yet resolved.
+        const bothServerStamped = typeof local?.server_ts === 'number' && typeof remote.server_ts === 'number';
+        let localTime, remoteTime;
+        if (bothServerStamped) {
+          localTime = local.server_ts;
+          remoteTime = remote.server_ts;
+        } else {
+          localTime  = local?.updated_at  ? new Date(local.updated_at).getTime()  : 0;
+          remoteTime = remote.updated_at  ? new Date(remote.updated_at).getTime() : 0;
+        }
         if (localTime >= remoteTime) return; // local is at least as fresh — ignore
 
         // Concurrent-edit warning (UC-3): another device just overwrote a money
@@ -3233,8 +3255,9 @@
       showScreen(screenId) {
         document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
         document.getElementById(screenId).classList.add('active');
-        document.querySelectorAll('.tab-button').forEach(b => b.classList.remove('active'));
-        document.querySelector(`[data-screen="${screenId}"]`)?.classList.add('active');
+        document.querySelectorAll('.tab-button').forEach(b => { b.classList.remove('active'); b.setAttribute('aria-selected', 'false'); });
+        const activeTab = document.querySelector(`[data-screen="${screenId}"]`);
+        if (activeTab) { activeTab.classList.add('active'); activeTab.setAttribute('aria-selected', 'true'); }
         this.currentScreen = screenId;
         this._setAppBgForScreen(screenId);
 
@@ -3992,7 +4015,7 @@
               ${this.isOwner() ? `<button onclick="app.deleteSession('${session.id}')" style="
                 padding: 11px 14px; border-radius: 10px; font-size: 16px;
                 background: transparent; border: 1px solid var(--border-color); color: var(--text-secondary);
-                cursor: pointer; touch-action: manipulation;" title="Delete session">🗑</button>` : ''}
+                cursor: pointer; touch-action: manipulation;" title="Delete session" aria-label="Delete session">🗑</button>` : ''}
             </div>
           `;
         }
@@ -4160,7 +4183,7 @@
                   </div>
                   <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
                     <span style="font-size: 14px; font-weight: 800; color: ${netPl >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)'};">${netPl >= 0 ? '+' : ''}$${netPl.toLocaleString()}</span>
-                    ${isActive ? `<button onclick="event.stopPropagation(); app.undoCashOut('${entry.id}')" style="font-size: 11px; padding: 4px 8px; border-radius: 6px; background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-secondary); cursor: pointer; touch-action: manipulation;">↩</button>` : ''}
+                    ${isActive ? `<button onclick="event.stopPropagation(); app.undoCashOut('${entry.id}')" title="Undo cashout" aria-label="Undo cashout" style="font-size: 11px; padding: 4px 8px; border-radius: 6px; background: var(--bg-tertiary); border: 1px solid var(--border-color); color: var(--text-secondary); cursor: pointer; touch-action: manipulation;">↩</button>` : ''}
                   </div>
                 </div>
               `;
@@ -6810,6 +6833,13 @@
                   <button class="btn btn-secondary" data-pos-id="${pos.id}" data-method="float_sgd" onclick="app.setSettlementMethod('${pos.id}', 'float_sgd')" style="font-size: 12px;">Float SGD</button>
                   <button class="btn btn-secondary" data-pos-id="${pos.id}" data-method="float_usdt" onclick="app.setSettlementMethod('${pos.id}', 'float_usdt')" style="font-size: 12px;">Float USDT</button>
                 </div>
+                <div id="partialRow_${pos.id}" style="display:none; margin-top:8px; align-items:center; gap:8px; font-size:12px; color:var(--text-secondary);">
+                  <span>Settle now:</span>
+                  <input type="text" inputmode="numeric" id="partialAmt_${pos.id}" placeholder="${Math.abs(pos.remaining).toLocaleString()}"
+                    oninput="app._fmtPartialInput(this)" onclick="this.select()"
+                    style="width:110px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
+                  <span id="partialHint_${pos.id}" style="flex:1;">rest auto-parks as carry</span>
+                </div>
               ` : `<div style="font-size: 12px; color: var(--accent-success); margin-top: 4px;">✓ ${pos.handled ? 'Settled during play' : 'Fully settled at table'}</div>`}
             `;
           }
@@ -6850,6 +6880,33 @@
           document.querySelectorAll(`[data-pos-id="${entryId}"]`).forEach(btn => {
             btn.classList.toggle('active', btn.dataset.method === method);
           });
+          // Partial-settlement input (UC-4): only meaningful when settling via a
+          // real method — 'park' carries the whole amount, so hide it there.
+          const partialRow = document.getElementById(`partialRow_${entryId}`);
+          if (partialRow) {
+            partialRow.style.display = (method && method !== 'park') ? 'flex' : 'none';
+            if (method === 'park') { const inp = document.getElementById(`partialAmt_${entryId}`); if (inp) inp.value = ''; position.settle_partial = null; }
+          }
+          app.updateSettlementProjection();
+        }
+      },
+
+      _fmtPartialInput(input) {
+        const raw = input.value.replace(/[^0-9]/g, '');
+        input.value = raw ? parseInt(raw).toLocaleString() : '';
+        const posId = input.id.replace('partialAmt_', '');
+        const position = app.settlementData?.positions.find(p => p.id === posId);
+        if (position) {
+          const entered = parseInt(raw, 10) || 0;
+          const full = Math.abs(position.remaining);
+          // Cap at the full amount; 0/blank means "settle the whole thing".
+          position.settle_partial = (entered > 0 && entered < full) ? entered : null;
+          const hint = document.getElementById(`partialHint_${posId}`);
+          if (hint) {
+            hint.textContent = position.settle_partial
+              ? `$${(full - position.settle_partial).toLocaleString()} parks as carry`
+              : 'rest auto-parks as carry';
+          }
           app.updateSettlementProjection();
         }
       },
@@ -6869,7 +6926,10 @@
           const amt = pos.remaining !== undefined ? pos.remaining : pos.net_position;
           if (amt === 0) continue;
           const method = pos.settlement_method || 'park';
-          const abs = Math.abs(amt);
+          // Only the partial amount touches the float; the rest parks (UC-4).
+          const settleMag = (method !== 'park' && pos.settle_partial && pos.settle_partial > 0 && pos.settle_partial < Math.abs(amt))
+            ? pos.settle_partial : Math.abs(amt);
+          const abs = settleMag;
 
           if (method === 'float_sgd') {
             if (amt > 0) {
@@ -7052,9 +7112,34 @@
           // settled outside the app) — its money already moved. Skip to avoid
           // double-paying (UC-1/BE-1).
           if (pos.settlement_method === 'allocated' || pos.settlement_method === 'fully_settled') continue;
-          const amt = pos.remaining !== undefined ? pos.remaining : pos.net_position;
+          let amt = pos.remaining !== undefined ? pos.remaining : pos.net_position;
           if (amt === 0) continue;
           const method = pos.settlement_method || 'park';
+
+          // Partial settlement (UC-4): settle `settle_partial` via the chosen
+          // method now and park the remainder as a carry. settle_partial is the
+          // magnitude; keep `amt`'s sign so direction (won/owes) is preserved.
+          if (method !== 'park' && pos.settle_partial && pos.settle_partial > 0 && pos.settle_partial < Math.abs(amt)) {
+            const sign = amt > 0 ? 1 : -1;
+            const parked = (Math.abs(amt) - pos.settle_partial) * sign;
+            await db.put('carryBalances', {
+              id: crypto.randomUUID(),
+              player_id: pos.player_id,
+              amount_sgd: parked,
+              origin_session_id: session.id,
+              origin_entry_id: null,
+              status: 'open',
+              cleared_at: null,
+              cleared_via: null,
+              rate_used: null,
+              usdt_amount: null,
+              note: `Parked remainder from ${this._fmtDate(session.date)} (partial settle)`,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              deleted_at: null,
+            });
+            amt = pos.settle_partial * sign; // settle only the partial amount below
+          }
 
           if (method === 'park') {
             // Parked — carry forward, settle later via Carries tab
