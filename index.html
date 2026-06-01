@@ -6763,9 +6763,10 @@
         for (const p of players) playerMap[p.id] = p;
 
         const otherEntries = entries.filter(e => playerMap[e.player_id]?.role !== 'dealer');
-        const allOthersCashedOut = otherEntries.every(e => e.cash_out !== null && e.cash_out !== undefined);
-        if (!allOthersCashedOut) {
-          if (!confirm('Not all players have cashed out. Continue?')) return;
+        const stillIn = otherEntries.filter(e => e.cash_out === null || e.cash_out === undefined);
+        if (stillIn.length > 0) {
+          const names = stillIn.map(e => playerMap[e.player_id]?.name || '?').join(', ');
+          if (!confirm(`${stillIn.length} player(s) have NOT cashed out: ${names}.\n\nIf you continue, their buy-ins will be counted as dealer take (treated as a total loss for them). Cash them out first unless that's really what you want.\n\nEnd session anyway?`)) return;
         }
 
         // Auto-finalize the Dealer entry
@@ -6845,6 +6846,12 @@
           const alreadySettled = received - paid; // positive means net received, negative means net paid out
           const remaining = handled ? 0 : netPosition - alreadySettled;
 
+          // A non-dealer who never cashed out is still IN PLAY — their result
+          // is unknown, so net_pl reads 0 and remaining reads 0, which would
+          // otherwise render a misleading "✓ Fully settled". Flag it instead.
+          const role = players.find(p => p.id === entry.player_id)?.role;
+          const inPlay = role !== 'dealer' && role !== 'bank' && (entry.cash_out === null || entry.cash_out === undefined);
+
           return {
             ...entry,
             player: players.find(p => p.id === entry.player_id),
@@ -6853,6 +6860,7 @@
             already_settled: alreadySettled,
             remaining,
             handled,
+            inPlay,
           };
         });
 
@@ -6894,11 +6902,11 @@
               <div class="settlement-row-values">
                 <div>
                   <div class="settlement-value-label">Session</div>
-                  <div class="settlement-value">${pos.net_pl > 0 ? '+' : ''}$${Math.abs(pos.net_pl).toLocaleString()}</div>
+                  <div class="settlement-value ${pos.net_pl > 0 ? 'positive' : pos.net_pl < 0 ? 'negative' : ''}">${pos.net_pl > 0 ? '+' : pos.net_pl < 0 ? '-' : ''}$${Math.abs(pos.net_pl).toLocaleString()}</div>
                 </div>
                 <div>
                   <div class="settlement-value-label">Carry</div>
-                  <div class="settlement-value">${pos.prior_carry > 0 ? '+' : ''}$${Math.abs(pos.prior_carry).toLocaleString()}</div>
+                  <div class="settlement-value ${pos.prior_carry > 0 ? 'positive' : pos.prior_carry < 0 ? 'negative' : ''}">${pos.prior_carry > 0 ? '+' : pos.prior_carry < 0 ? '-' : ''}$${Math.abs(pos.prior_carry).toLocaleString()}</div>
                 </div>
                 <div>
                   <div class="settlement-value-label">Position</div>
@@ -6913,11 +6921,11 @@
               <div class="settlement-row-values" style="flex-wrap: wrap;">
                 <div>
                   <div class="settlement-value-label">Session</div>
-                  <div class="settlement-value">${pos.net_pl > 0 ? '+' : ''}$${Math.abs(pos.net_pl).toLocaleString()}</div>
+                  <div class="settlement-value ${pos.net_pl > 0 ? 'positive' : pos.net_pl < 0 ? 'negative' : ''}">${pos.net_pl > 0 ? '+' : pos.net_pl < 0 ? '-' : ''}$${Math.abs(pos.net_pl).toLocaleString()}</div>
                 </div>
                 <div>
                   <div class="settlement-value-label">Carry</div>
-                  <div class="settlement-value">${pos.prior_carry > 0 ? '+' : ''}$${Math.abs(pos.prior_carry).toLocaleString()}</div>
+                  <div class="settlement-value ${pos.prior_carry > 0 ? 'positive' : pos.prior_carry < 0 ? 'negative' : ''}">${pos.prior_carry > 0 ? '+' : pos.prior_carry < 0 ? '-' : ''}$${Math.abs(pos.prior_carry).toLocaleString()}</div>
                 </div>
                 ${tablePmtHtml}
                 <div>
@@ -6939,7 +6947,9 @@
                     style="width:110px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
                   <span id="partialHint_${pos.id}" style="flex:1;">rest auto-parks as carry</span>
                 </div>
-              ` : `<div style="font-size: 12px; color: var(--accent-success); margin-top: 4px;">✓ ${pos.handled ? 'Settled during play' : 'Fully settled at table'}</div>`}
+              ` : (pos.inPlay
+                ? `<div style="font-size: 12px; color: var(--accent-warning); margin-top: 4px; font-weight:700;">⚠️ Still in play — not cashed out. Their buy-in is counting as dealer take.</div>`
+                : `<div style="font-size: 12px; color: var(--accent-success); margin-top: 4px;">✓ ${pos.handled ? 'Settled during play' : 'Fully settled at table'}</div>`)}
             `;
           }
           table.appendChild(row);
@@ -7137,6 +7147,14 @@
 
       async commitSettlement() {
         if (!app.settlementData) return;
+        // Final guard: if any player is still in-play (never cashed out), their
+        // buy-in is being absorbed as dealer take. Make the dealer acknowledge
+        // it before committing — this is the moment money becomes final.
+        const stillInPlay = (app.settlementData.positions || []).filter(p => p.inPlay);
+        if (stillInPlay.length > 0) {
+          const names = stillInPlay.map(p => p.player?.name || '?').join(', ');
+          if (!confirm(`${stillInPlay.length} player(s) never cashed out: ${names}.\n\nCommitting now books their buy-ins as dealer take (a total loss for them). Go back and cash them out unless that's intended.\n\nCommit settlement anyway?`)) return;
+        }
         // Re-entrancy guard — a double-tap must not re-create the dealer take,
         // Derrick's float entry, and a second set of parked carries (BE-2).
         if (this._committing) return;
