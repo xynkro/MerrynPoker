@@ -12,6 +12,13 @@
   <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
   <link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
   <title>Merryn Poker</title>
+  <!-- Display font: Fraunces (high-contrast serif) for the logo, section titles
+       and money heroes — a premium card-room feel. Offline-first PWA: if the CDN
+       is unreachable on a cold launch the headings degrade cleanly to the Georgia
+       stack until the font is cached, which is acceptable. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&display=swap" rel="stylesheet">
   <!-- Firebase Realtime Database — multi-device live sync.
        Config keys are public-by-design (Web SDK); access is gated by RTDB security rules. -->
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
@@ -45,6 +52,7 @@
       --border-color: #2a2a4a;
       --border-radius-card: 12px;
       --border-radius-btn: 8px;
+      --font-display: 'Fraunces', Georgia, 'Times New Roman', serif;
     }
 
     html, body {
@@ -56,6 +64,10 @@
       color: var(--text-primary);
       font-size: 18px;
       line-height: 1.5;
+      /* Tabular figures so every money column lines up and digits don't reflow
+         on live update — this app is columns of money (UI-1). */
+      font-variant-numeric: tabular-nums;
+      font-feature-settings: 'tnum' 1;
       overflow: hidden;
       overscroll-behavior: none; /* prevents page rubber-band on iOS without using position:fixed
                                     (position:fixed on body breaks inner overflow:auto touch-scroll on iOS Safari) */
@@ -111,13 +123,14 @@
     }
 
     .login-logo {
-      font-size: 32px;
-      font-weight: 800;
-      letter-spacing: 2px;
+      font-size: 44px;
+      font-weight: 600;
+      font-family: var(--font-display);
+      font-style: italic;
+      letter-spacing: 1px;
       color: #e8d5a3;
-      text-transform: uppercase;
       margin-bottom: 4px;
-      text-shadow: 0 2px 20px rgba(232,213,163,0.3);
+      text-shadow: 0 2px 24px rgba(232,213,163,0.35);
     }
     .login-subtitle {
       font-size: 12px;
@@ -382,6 +395,10 @@
       color: var(--accent-brand);
     }
 
+    .tab-button:active {
+      transform: scale(0.92);
+    }
+
     .tab-icon {
       font-size: 20px;       /* was 24px */
     }
@@ -394,16 +411,18 @@
 
     .float-card {
       background: linear-gradient(135deg, var(--bg-secondary), var(--bg-tertiary));
-      border: 1px solid var(--border-color);
+      border: 1px solid rgba(232, 213, 163, 0.18);
       border-radius: var(--border-radius-card);
       padding: 14px 16px;
       margin-bottom: 10px;
       text-align: center;
-      box-shadow: 0 4px 16px rgba(233, 69, 96, 0.15);
+      /* Gold lift instead of the old red glow that clashed with the brand. */
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(232, 213, 163, 0.10);
     }
 
     .float-label {
-      color: var(--text-secondary);
+      color: var(--accent-brand);
+      opacity: 0.85;
       font-size: 13px;
       margin-bottom: 6px;
       text-transform: uppercase;
@@ -414,8 +433,10 @@
       display: flex;
       justify-content: center;
       gap: 20px;
-      font-size: 22px;
+      font-size: 24px;
       font-weight: 700;
+      font-family: var(--font-display);
+      color: var(--accent-brand);
     }
 
     .float-sgd, .float-usdt {
@@ -430,14 +451,14 @@
     }
 
     .section-title {
-      font-size: 18px;
-      font-weight: 700;
+      font-size: 20px;
+      font-weight: 600;
+      font-family: var(--font-display);
       color: var(--text-primary);
-      text-transform: uppercase;
       margin-top: 24px;
       margin-bottom: 16px;
       padding: 0 4px;
-      letter-spacing: 1px;
+      letter-spacing: 0.3px;
     }
 
     .carries-scroll {
@@ -842,7 +863,8 @@
     }
 
     .btn:active {
-      opacity: 0.8;
+      opacity: 0.85;
+      transform: scale(0.97);
     }
 
     .btn-primary {
@@ -992,8 +1014,9 @@
     }
 
     .settlement-toggle .btn.active {
-      background: var(--accent-primary);
-      color: white;
+      background: var(--accent-brand);
+      color: var(--accent-brand-ink);
+      font-weight: 700;
     }
 
     .float-feasibility {
@@ -1050,8 +1073,8 @@
     }
 
     .carries-tab.active {
-      color: var(--accent-primary);
-      border-bottom-color: var(--accent-primary);
+      color: var(--accent-brand);
+      border-bottom-color: var(--accent-brand);
     }
 
     .carries-content {
@@ -1168,6 +1191,10 @@
       color: var(--accent-brand-ink);
       border-color: var(--accent-brand);
       font-weight: 700;
+    }
+
+    .filter-chip:active {
+      transform: scale(0.94);
     }
 
     .transaction-list {
@@ -3990,6 +4017,18 @@
               <span id="syncBadge" style="font-size:11px;" title=""></span>
             </div>
           </div>
+
+          ${this.isDealer() ? `
+          <div style="display:flex; gap:8px; padding: 0 16px 10px;">
+            <div style="flex:1; text-align:center; padding:8px 6px; background:var(--bg-tertiary); border:1px solid var(--border-color); border-radius:10px;">
+              <div style="font-size:10px; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.4px;">Paid out</div>
+              <div class="numeric-display" style="font-size:16px; font-weight:800;">$${cashOutTotal.toLocaleString()}</div>
+            </div>
+            <div style="flex:1; text-align:center; padding:8px 6px; background:var(--bg-tertiary); border:1px solid var(--accent-warning)33; border-radius:10px;">
+              <div style="font-size:10px; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.4px;">On table</div>
+              <div class="numeric-display" style="font-size:16px; font-weight:800; color:var(--accent-warning);">$${Math.max(0, buyInTotal - cashOutTotal).toLocaleString()}</div>
+            </div>
+          </div>` : ''}
         `;
 
         // Player cards
@@ -4376,15 +4415,22 @@
       // session standard amount and shows a confirming toast with the new total.
       async quickRebuy(entryId, amount) {
         const entry = await db.get('sessionEntries', entryId);
-        if (!entry || entry.cash_out !== null && entry.cash_out !== undefined) return;
+        if (!entry || (entry.cash_out !== null && entry.cash_out !== undefined)) return;
         entry.buy_ins = entry.buy_ins || [];
+        const addedIndex = entry.buy_ins.length; // index of the buy-in we're adding (for undo)
         entry.buy_ins.push({ amount, timestamp: new Date().toISOString() });
         entry.updated_at = new Date().toISOString();
         await db.put('sessionEntries', entry);
         const total = entry.buy_ins.reduce((s, b) => s + b.amount, 0);
         const player = await app.getPlayer(entry.player_id);
         this.renderSessionScreen();
-        this.showToast(`${player?.name || 'Player'} +$${amount.toLocaleString()} · $${total.toLocaleString()} in`);
+        // Undo toast (MP-1): a mis-tap on the always-visible +Nk button silently
+        // moves money, so offer a one-tap reversal that removes exactly the
+        // buy-in we just added (always the last one).
+        this.showUndoToast(
+          `${player?.name || 'Player'} +$${amount.toLocaleString()} · $${total.toLocaleString()} in`,
+          () => this.removeBuyin(entryId, addedIndex)
+        );
         this.autoSync();
       },
 
@@ -5265,9 +5311,14 @@
         this.autoSync();
       },
 
-      showUndoToast(message) {
+      // Show a toast with an Undo button. `onUndo` is an optional callback for
+      // what the Undo button reverses; if omitted it defaults to undoing the
+      // last cashout (backward compatible). The handler is stored and invoked
+      // via _runUndoToastAction so any flow (cashout, rebuy, …) can plug in.
+      showUndoToast(message, onUndo) {
         // Remove any existing undo toast
         this.clearUndoToast();
+        this._undoToastAction = (typeof onUndo === 'function') ? onUndo : () => this.undoLastCashout();
         const toast = document.createElement('div');
         toast.id = 'undoToast';
         toast.style.cssText = `
@@ -5291,7 +5342,7 @@
         `;
         toast.innerHTML = `
           <span>${message}</span>
-          <button onclick="app.undoLastCashout()" style="
+          <button onclick="app._runUndoToastAction()" style="
             font-size: 12px; font-weight: 700;
             padding: 4px 10px; border-radius: 6px;
             background: var(--accent-warning)33;
@@ -5314,6 +5365,13 @@
       async undoLastCashout() {
         if (!this.lastCashout) return;
         await this.undoCashOut(this.lastCashout.entryId);
+      },
+
+      // Runs whatever the current undo toast is set to reverse, then dismisses it.
+      async _runUndoToastAction() {
+        const action = this._undoToastAction;
+        this.clearUndoToast();
+        if (typeof action === 'function') await action();
       },
 
       // Cash Out tab: read the inline input and record cashout
@@ -9015,6 +9073,13 @@
       async confirmClearViaPlayer(carryId, payerPlayerId) {
         const carry = await db.get('carryBalances', carryId);
         if (!carry) return;
+        // Idempotency: a carry already cleared must not be re-settled (MP-3).
+        if (carry.status !== 'open') return;
+        // Re-entrancy guard — a laggy double-tap must not write two peer-
+        // settlement rows (the same BE-2 guard the other money-writes have).
+        if (this._committing) return;
+        this._committing = true;
+        try {
         const players = await db.getAll('players');
         const carryPlayer = players.find(p => p.id === carry.player_id);
         const payerPlayer = players.find(p => p.id === payerPlayerId);
@@ -9051,6 +9116,9 @@
         this.closeModal();
         this.showToast(`${carryPlayer?.name} cleared via ${payerPlayer?.name}`);
         this.renderCarriesScreen();
+        } finally {
+          this._committing = false;
+        }
       },
 
       async confirmClearUsdt(carryId) {
@@ -9460,7 +9528,8 @@
         if (!list) return;
         list.innerHTML = '';
         const players = this._floatPlayers || [];
-        const isConversion = (t) => t.type === 'USDT_SWAP_CASH_IN' || t.type === 'USDT_SWAP_CASH_OUT';
+        const isConversion = (t) => t.type === 'CONVERT_CASH_TO_USDT' || t.type === 'CONVERT_USDT_TO_CASH'
+          || t.type === 'USDT_SWAP_CASH_IN' || t.type === 'USDT_SWAP_CASH_OUT'; // both naming families (current + legacy)
         const matches = (tx) => {
           switch (filter) {
             case 'Cash In':      return (tx.amount_sgd || 0) > 0;
@@ -9688,11 +9757,24 @@
           </div>
         `;
         document.getElementById('modalFooter').innerHTML = `
-          <button class="btn btn-danger" onclick="(async () => { if(confirm('Delete ${player.name}?')) { await db.softDelete('players', '${player.id}'); app.showToast('Deleted'); app.closeModal(); app.renderPlayersScreen(); } })()">Delete</button>
+          <button class="btn btn-danger" onclick="app.confirmDeletePlayer('${player.id}')">Delete</button>
           <button class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
           <button class="btn btn-primary" onclick="app.saveEditedPlayer('${player.id}')">Save</button>
         `;
         modal.classList.add('show');
+      },
+
+      // Delete a player via a helper (not an inline confirm) so names containing
+      // an apostrophe don't break the onclick string (F2). Only the UUID is
+      // interpolated into the attribute, which is always quote-safe.
+      async confirmDeletePlayer(playerId) {
+        const p = await db.get('players', playerId);
+        if (!p) return;
+        if (!confirm(`Delete ${p.name}?`)) return;
+        await db.softDelete('players', playerId);
+        this.showToast('Deleted');
+        this.closeModal();
+        this.renderPlayersScreen();
       },
 
       // Save edits to an existing player with validation (DI-6): name required,
@@ -9925,6 +10007,8 @@
           USDT_COLLECTION:     { icon: '🔷', label: 'USDT Collected' },
           USDT_SWAP_CASH_IN:   { icon: '📥', label: 'USDT Swap → Cash In' },
           USDT_SWAP_CASH_OUT:  { icon: '📤', label: 'USDT Swap → Cash Out' },
+          CONVERT_CASH_TO_USDT:{ icon: '🔄', label: 'Cash → USDT' },
+          CONVERT_USDT_TO_CASH:{ icon: '🔄', label: 'USDT → Cash' },
           BANK_ABSORB:         { icon: '🏦', label: 'Derrick Session' },
           BANK_WIN:            { icon: '📈', label: 'Derrick Won' },
           BANK_LOSS:           { icon: '📉', label: 'Derrick Lost' },
