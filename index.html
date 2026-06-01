@@ -8821,8 +8821,8 @@
             slide.innerHTML = `
               <div class="carry-item" onclick="app.showCarryDetail(app._carryCache['${carry.id}'])" style="margin-bottom: 0; border-radius: 12px 12px 0 0;">
                 <div class="carry-item-left">
-                  <div class="carry-item-name">${player?.name || 'Unknown'}</div>
-                  <div class="carry-item-meta">${daysAgo} days ago${carry.note ? ' · ' + carry.note : ''}</div>
+                  <div class="carry-item-name">${player?.name || 'Unknown'}${carry.counterparty_id ? ` <span style="font-size:11px; font-weight:600; color:var(--accent-brand); opacity:0.9;">⇄ ${this._esc(players.find(p=>p.id===carry.counterparty_id)?.name || '?')}</span>` : ''}</div>
+                  <div class="carry-item-meta">${daysAgo} days ago${carry.note ? ' · ' + this._esc(carry.note) : ''}</div>
                 </div>
                 <div class="carry-item-amount ${carry.amount_sgd > 0 ? 'positive' : 'negative'}">
                   ${carry.amount_sgd > 0 ? '+' : '-'}$${Math.abs(carry.amount_sgd).toLocaleString()}
@@ -8911,10 +8911,21 @@
         carry.note = note || null;
         carry.updated_at = new Date().toISOString();
         await db.put('carryBalances', carry);
+        // Keep a linked counterparty's open carry mirrored (opposite sign).
+        let mirrored = false;
+        if (carry.linked_carry_id) {
+          const partner = await db.get('carryBalances', carry.linked_carry_id);
+          if (partner && !partner.deleted_at && partner.status === 'open') {
+            partner.amount_sgd = -carry.amount_sgd;
+            partner.updated_at = new Date().toISOString();
+            await db.put('carryBalances', partner);
+            mirrored = true;
+          }
+        }
         const players = await db.getAll('players');
         const name = players.find(p => p.id === carry.player_id)?.name || 'Player';
         const owed = carry.amount_sgd > 0;
-        this.showToast(`${name} now ${owed ? 'owed' : 'owes'} $${Math.abs(carry.amount_sgd).toLocaleString()}`);
+        this.showToast(`${name} now ${owed ? 'owed' : 'owes'} $${Math.abs(carry.amount_sgd).toLocaleString()}${mirrored ? ' (linked side updated)' : ''}`);
         this.closeModal();
         this.renderCarriesScreen();
       },
@@ -9045,15 +9056,54 @@
         modal.classList.add('show');
       },
 
+      // Keep a linked (mirrored) carry in sync. action: 'clear' | 'delete'.
+      // Only touches a linked partner that's still open (so we don't re-clear
+      // an already-settled side or loop back on ourselves).
+      async _syncLinkedCarry(carry, action, viaLabel) {
+        if (!carry || !carry.linked_carry_id) return;
+        const partner = await db.get('carryBalances', carry.linked_carry_id);
+        if (!partner || partner.deleted_at) return;
+        const now = new Date().toISOString();
+        if (action === 'delete') {
+          partner.deleted_at = now; partner.updated_at = now;
+          partner.linked_carry_id = null;
+          await db.put('carryBalances', partner);
+          if (app._carryCache) delete app._carryCache[partner.id];
+        } else if (action === 'clear' && partner.status === 'open') {
+          partner.status = 'cleared';
+          partner.cleared_at = now;
+          partner.cleared_via = viaLabel || 'linked';
+          partner.updated_at = now;
+          await db.put('carryBalances', partner);
+        }
+      },
+
       async _confirmDeleteCarry(carryId) {
         const carry = await db.get('carryBalances', carryId);
         if (!carry) { this.closeModal(); return; }
+        // If linked, offer to remove both sides (keeps the books balanced).
+        let alsoMirror = false;
+        if (carry.linked_carry_id) {
+          const partner = await db.get('carryBalances', carry.linked_carry_id);
+          if (partner && !partner.deleted_at) {
+            const players = await db.getAll('players');
+            const pn = players.find(p=>p.id===partner.player_id)?.name || 'the other player';
+            alsoMirror = confirm(`This carry is linked to ${pn}. Delete BOTH sides?\n\nOK = delete both · Cancel = delete only this one (leaves ${pn}'s side).`);
+          }
+        }
         carry.deleted_at = new Date().toISOString();
         carry.updated_at = new Date().toISOString();
+        if (alsoMirror) { await this._syncLinkedCarry(carry, 'delete'); }
+        else if (carry.linked_carry_id) {
+          // Unlink the partner so it's no longer pointing at a deleted record.
+          const partner = await db.get('carryBalances', carry.linked_carry_id);
+          if (partner && !partner.deleted_at) { partner.linked_carry_id = null; partner.updated_at = new Date().toISOString(); await db.put('carryBalances', partner); }
+          carry.linked_carry_id = null;
+        }
         await db.put('carryBalances', carry);
         if (app._carryCache) delete app._carryCache[carryId];
         this.closeModal();
-        this.showToast('Carry deleted');
+        this.showToast(alsoMirror ? 'Both linked carries deleted' : 'Carry deleted');
         this.renderCarriesScreen();
         if (typeof this.autoSync === 'function') this.autoSync();
       },
@@ -9079,6 +9129,7 @@
           carry.cleared_at = new Date().toISOString();
           carry.cleared_via = 'external';
           await db.put('carryBalances', carry);
+          await this._syncLinkedCarry(carry, 'clear', 'external');
           this.showToast(`${name} marked as settled`);
           this.renderCarriesScreen();
 
@@ -9100,6 +9151,7 @@
             updated_at: new Date().toISOString(),
             deleted_at: null,
           });
+          await this._syncLinkedCarry(carry, 'clear', 'dealer_stash');
           this.showToast(`${name} cleared via Dealer Stash`);
           this.renderCarriesScreen();
 
@@ -9124,6 +9176,7 @@
             updated_at: new Date().toISOString(),
             deleted_at: null,
           });
+          await this._syncLinkedCarry(carry, 'clear', 'derrick_float');
           this.showToast(`${name} cleared via Derrick's Float`);
           this.renderCarriesScreen();
 
@@ -9229,6 +9282,7 @@
         carry.cleared_via = `player:${payerPlayerId}`;
         carry.note = `Cleared via ${payerPlayer?.name}`;
         await db.put('carryBalances', carry);
+        await this._syncLinkedCarry(carry, 'clear', 'player');
 
         // Record an auditable, reversible peer-settlement row (UC-5). Money
         // genuinely moves between two players, NOT through the float/stash, so
@@ -9279,6 +9333,7 @@
         carry.rate_used = rate;
         carry.note = note;
         await db.put('carryBalances', carry);
+        await this._syncLinkedCarry(carry, 'clear', 'usdt');
 
         // Mirror the USDT movement onto Derrick's float so the balance reflects.
         // amount_sgd > 0  → player is owed → float USDT goes DOWN (we pay out)
@@ -9336,6 +9391,16 @@
             <div id="ncPreview" style="font-size:13px; margin-top:6px; text-align:center;"></div>
           </div>
           <div class="form-group">
+            <label class="form-label">Counterparty <span style="font-size:11px; color:var(--text-secondary);">(optional — who it's with)</span></label>
+            <select class="form-input" id="newCarryCounterparty">
+              <option value="">— none / settle with house —</option>
+              ${players.map(p => `<option value="${p.id}">${p.name}</option>`).join('')}
+            </select>
+            <div style="font-size:11px; color:var(--text-secondary); margin-top:6px;">
+              If set, a mirrored carry is created on their side automatically (e.g. one owes $25k ⟺ the other is owed $25k).
+            </div>
+          </div>
+          <div class="form-group">
             <label class="form-label">Note (optional)</label>
             <input type="text" class="form-input" id="newCarryNote" placeholder="e.g. Borrowed from Derrick">
           </div>
@@ -9371,25 +9436,56 @@
 
       async confirmNewCarry() {
         const playerId = document.getElementById('newCarryPlayer').value;
+        const counterpartyId = document.getElementById('newCarryCounterparty')?.value || '';
         const mag = parseInt((document.getElementById('newCarryAmount').value||'').replace(/[^0-9]/g,''), 10);
         const note = document.getElementById('newCarryNote').value.trim();
         if (!playerId) { this.showToast('Select a player'); return; }
         if (isNaN(mag) || mag === 0) { this.showToast('Enter a non-zero amount'); return; }
+        if (counterpartyId && counterpartyId === playerId) { this.showToast('Counterparty must be a different player'); return; }
         const amount = (this._ncDir === 'owed') ? mag : -mag;  // owes = negative, owed = positive
+        const now = new Date().toISOString();
+        const players = await db.getAll('players');
+        const nm = id => players.find(p=>p.id===id)?.name || 'someone';
+
+        const mainId = crypto.randomUUID();
+        const mirrorId = counterpartyId ? crypto.randomUUID() : null;
+
         const carry = {
-          id: crypto.randomUUID(),  // was Date.now()+random — collidable across devices (BE-6)
+          id: mainId,
           player_id: playerId,
+          counterparty_id: counterpartyId || null,
+          linked_carry_id: mirrorId,                 // the other side's carry (if any)
           origin_session_id: null,
           origin_entry_id: null,
           amount_sgd: amount,
           status: 'open',
-          note: note || null,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
+          note: note || (counterpartyId ? `${amount<0?'Owes':'Owed by'} ${nm(counterpartyId)}` : null),
+          created_at: now,
+          updated_at: now,
           deleted_at: null,
         };
         await db.put('carryBalances', carry);
-        this.showToast('Carry saved');
+
+        if (counterpartyId) {
+          // Mirror: opposite sign on the counterparty's books.
+          await db.put('carryBalances', {
+            id: mirrorId,
+            player_id: counterpartyId,
+            counterparty_id: playerId,
+            linked_carry_id: mainId,
+            origin_session_id: null,
+            origin_entry_id: null,
+            amount_sgd: -amount,
+            status: 'open',
+            note: note || `${(-amount)<0?'Owes':'Owed by'} ${nm(playerId)}`,
+            created_at: now,
+            updated_at: now,
+            deleted_at: null,
+          });
+          this.showToast(`Linked carry saved — mirrored to ${nm(counterpartyId)}`);
+        } else {
+          this.showToast('Carry saved');
+        }
         this.closeModal();
         this.renderCarriesScreen();
       },
@@ -10752,7 +10848,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v42';
+    const APP_VERSION = 'v43';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
