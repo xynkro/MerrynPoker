@@ -8880,16 +8880,51 @@
         }
       },
 
+      // Edit an OPEN carry's amount/note. amount_sgd sign convention:
+      // negative = player owes, positive = player is owed.
+      async saveCarryEdit(carryId) {
+        const carry = await db.get('carryBalances', carryId);
+        if (!carry) return;
+        if (carry.status !== 'open') { this.showToast('Only open carries can be edited'); return; }
+        const raw = document.getElementById('editCarryAmount')?.value;
+        const amt = parseFloat(raw);
+        if (isNaN(amt)) { this.showToast('Enter a valid amount'); return; }
+        if (amt === 0) { this.showToast('Amount can\'t be zero — use a clear button to settle it'); return; }
+        const note = (document.getElementById('editCarryNote')?.value || '').trim();
+        carry.amount_sgd = Math.round(amt);
+        carry.note = note || null;
+        carry.updated_at = new Date().toISOString();
+        await db.put('carryBalances', carry);
+        const players = await db.getAll('players');
+        const name = players.find(p => p.id === carry.player_id)?.name || 'Player';
+        const owed = carry.amount_sgd > 0;
+        this.showToast(`${name} now ${owed ? 'owed' : 'owes'} $${Math.abs(carry.amount_sgd).toLocaleString()}`);
+        this.closeModal();
+        this.renderCarriesScreen();
+      },
+
       async showCarryDetail(carry) {
         const player = (await db.getAll('players')).find(p => p.id === carry.player_id);
         const modal = document.getElementById('modal');
         document.getElementById('modalTitle').textContent = `${player?.name} - Carry Balance`;
+        const editable = carry.status === 'open';
         document.getElementById('modalBody').innerHTML = `
           <div class="form-group">
             <div class="form-label">Amount</div>
-            <div style="font-size: 18px; font-weight: 600; color: ${carry.amount_sgd > 0 ? 'var(--accent-success)' : 'var(--accent-danger)'};">
-              ${carry.amount_sgd > 0 ? '+' : '-'}$${Math.abs(carry.amount_sgd).toLocaleString()}
-            </div>
+            ${editable ? `
+              <div style="display:flex; align-items:center; gap:8px;">
+                <input type="number" class="form-input" id="editCarryAmount" value="${carry.amount_sgd}" step="1" inputmode="numeric"
+                  style="flex:1; font-size:20px; font-weight:700; text-align:center;">
+              </div>
+              <div style="font-size:11px; color:var(--text-secondary); margin-top:6px;">
+                Negative = player <b>owes</b> · Positive = player <b>is owed</b>
+              </div>
+              <div id="editCarryPreview" style="font-size:13px; margin-top:6px; text-align:center;"></div>
+            ` : `
+              <div style="font-size: 18px; font-weight: 600; color: ${carry.amount_sgd > 0 ? 'var(--accent-success)' : 'var(--accent-danger)'};">
+                ${carry.amount_sgd > 0 ? '+' : '-'}$${Math.abs(carry.amount_sgd).toLocaleString()}
+              </div>
+            `}
           </div>
           <div class="form-group">
             <div class="form-label">Status</div>
@@ -8897,12 +8932,27 @@
           </div>
           <div class="form-group">
             <div class="form-label">Note</div>
-            <div style="color: var(--text-secondary);">${carry.note || '-'}</div>
+            ${editable
+              ? `<input type="text" class="form-input" id="editCarryNote" value="${this._esc(carry.note || '')}" placeholder="optional note">`
+              : `<div style="color: var(--text-secondary);">${this._esc(carry.note || '-')}</div>`}
           </div>
         `;
+        // Live preview of the edited amount's direction
+        if (editable) {
+          const inp = document.getElementById('editCarryAmount');
+          const prev = document.getElementById('editCarryPreview');
+          const render = () => {
+            const v = parseFloat(inp.value);
+            if (isNaN(v) || v === 0) { prev.textContent = ''; return; }
+            const owed = v > 0;
+            prev.innerHTML = `<span style="color:${owed ? 'var(--accent-success)' : 'var(--accent-danger)'}; font-weight:700;">${player?.name || 'Player'} ${owed ? 'is owed' : 'owes'} $${Math.abs(v).toLocaleString()}</span>`;
+          };
+          inp.oninput = render; render();
+        }
         if (carry.status === 'open') {
           document.getElementById('modalFooter').innerHTML = `
             <div style="display: flex; flex-direction: column; gap: 8px; width: 100%;">
+              <button class="btn btn-primary btn-block" onclick="app.saveCarryEdit('${carry.id}')">💾 Save amount</button>
               <div style="font-size: 12px; color: var(--text-secondary); text-align: center; margin-bottom: 2px;">Clear via:</div>
               <div style="display: flex; gap: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--border-color);">
                 <button onclick="app.closeModal(); app.clearCarry('${carry.id}', 'player')" style="flex: 1; padding: 12px 4px; background: var(--bg-tertiary); color: var(--text-primary); border: none; font-size: 13px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation;">👤 Player</button>
@@ -10660,7 +10710,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v40';
+    const APP_VERSION = 'v41';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
