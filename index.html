@@ -8991,11 +8991,10 @@
         const modal = document.getElementById('modal');
         document.getElementById('modalTitle').textContent = `${player?.name} - Carry Balance`;
         const editable = carry.status === 'open';
-        // Counterparty options (exclude the carry's own player + dealer).
-        const cpOptions = allPlayers
+        // Counterparty candidates (exclude the carry's own player + dealer).
+        const cpPlayers = allPlayers
           .filter(p => p.id !== carry.player_id && p.role !== 'dealer' && !p.deleted_at)
-          .sort((a,b)=>a.name.localeCompare(b.name))
-          .map(p => `<option value="${p.id}" ${p.id===carry.counterparty_id?'selected':''}>${this._esc(p.name)}</option>`).join('');
+          .sort((a,b)=>a.name.localeCompare(b.name));
         document.getElementById('modalBody').innerHTML = `
           <div class="form-group">
             <div class="form-label">Amount</div>
@@ -9019,10 +9018,7 @@
           <div class="form-group">
             <div class="form-label">Counterparty <span style="font-size:11px; color:var(--text-secondary);">(who it's with)</span></div>
             ${editable
-              ? `<select class="form-input" id="editCarryCounterparty">
-                   <option value="">— none / house —</option>
-                   ${cpOptions}
-                 </select>
+              ? `${this._playerSearchFieldHTML({ fieldId:'editCarryCounterparty', players:cpPlayers, placeholder:'🔍 Search counterparty…', allowNone:true, noneLabel:'— none / house —', selectedId: carry.counterparty_id || '' })}
                  <div style="font-size:11px; color:var(--text-secondary); margin-top:6px;">Set this to mirror the balance on their side automatically.</div>`
               : `<div style="color: var(--text-secondary);">${cpName ? this._esc(cpName) : '—'}</div>`}
           </div>
@@ -9381,10 +9377,10 @@
         const modal = document.getElementById('modal');
         document.getElementById('modalTitle').textContent = `Clear ${name} — via Player`;
 
-        let listHtml = '<div style="max-height: 300px; overflow-y: auto;">';
+        let listHtml = '<div id="clearPickerList" style="max-height: 300px; overflow-y: auto;">';
         for (const p of players.sort((a, b) => a.name.localeCompare(b.name))) {
           if (p.id === carry.player_id || p.role === 'dealer') continue;
-          listHtml += `<button class="btn btn-secondary btn-block mb-12" onclick="app.confirmClearViaPlayer('${carryId}', '${p.id}')">${p.name}</button>`;
+          listHtml += `<button class="btn btn-secondary btn-block mb-12 clear-pick-btn" data-name="${this._esc((p.name||'').toLowerCase())}" onclick="app.confirmClearViaPlayer('${carryId}', '${p.id}')">${this._esc(p.name)}</button>`;
         }
         listHtml += '</div>';
 
@@ -9392,6 +9388,9 @@
           <div style="font-size: 13px; color: var(--text-secondary); margin-bottom: 12px;">
             ${carry.amount_sgd > 0 ? `${name} is owed $${absAmt.toLocaleString()}. Who is paying them?` : `${name} owes $${absAmt.toLocaleString()}. Who are they paying?`}
           </div>
+          <input type="search" id="clearPickerSearch" autocomplete="off" placeholder="🔍 Search player…"
+            oninput="document.querySelectorAll('#clearPickerList .clear-pick-btn').forEach(b=>{ b.style.display = (b.getAttribute('data-name')||'').includes(this.value.toLowerCase().trim()) ? '' : 'none'; })"
+            style="width:100%; padding:11px 12px; margin-bottom:10px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:10px; font-size:16px; box-sizing:border-box;">
           ${listHtml}
         `;
         document.getElementById('modalFooter').innerHTML = `<button class="btn btn-secondary btn-block" onclick="app.closeModal()">Cancel</button>`;
@@ -9499,6 +9498,57 @@
         }
       },
 
+      // Reusable searchable player picker. Renders a search box + filtered list
+      // and writes the chosen player's id into a HIDDEN input with id=`${fieldId}`
+      // so existing `getElementById(fieldId).value` reads keep working unchanged.
+      // opts: { fieldId, players:[{id,name}], placeholder, allowNone, noneLabel, selectedId }
+      _playerSearchFieldHTML(opts) {
+        const { fieldId, players, placeholder = '🔍 Search name…', allowNone = false, noneLabel = '— none —', selectedId = '' } = opts;
+        const sel = selectedId ? players.find(p => p.id === selectedId) : null;
+        const rows = players.map(p =>
+          `<div class="player-pick-row" data-field="${fieldId}" data-id="${p.id}" data-name="${this._esc((p.name||'').toLowerCase())}"
+             onclick="app._pickPlayer('${fieldId}','${p.id}', this)"
+             style="padding:10px 12px; border-bottom:1px solid var(--border-color); cursor:pointer; font-size:15px; touch-action:manipulation;">${this._esc(p.name)}</div>`
+        ).join('');
+        return `
+          <input type="hidden" id="${fieldId}" value="${selectedId}">
+          <input type="search" id="${fieldId}_search" autocomplete="off" placeholder="${placeholder}"
+            value="${sel ? this._esc(sel.name) : ''}"
+            oninput="app._filterPlayerField('${fieldId}', this.value)"
+            onfocus="document.getElementById('${fieldId}_list').style.display='block'"
+            style="width:100%; padding:11px 12px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:10px; font-size:16px; box-sizing:border-box;">
+          <div id="${fieldId}_list" style="display:none; max-height:200px; overflow-y:auto; -webkit-overflow-scrolling:touch; border:1px solid var(--border-color); border-radius:10px; margin-top:4px; background:var(--bg-secondary);">
+            ${allowNone ? `<div class="player-pick-row" data-field="${fieldId}" data-id="" data-name="" onclick="app._pickPlayer('${fieldId}','', this)" style="padding:10px 12px; border-bottom:1px solid var(--border-color); cursor:pointer; font-size:15px; color:var(--text-secondary);">${noneLabel}</div>` : ''}
+            ${rows}
+          </div>
+        `;
+      },
+
+      _pickPlayer(fieldId, id, el) {
+        const hidden = document.getElementById(fieldId);
+        const search = document.getElementById(fieldId + '_search');
+        const list = document.getElementById(fieldId + '_list');
+        if (hidden) hidden.value = id;
+        if (search) search.value = id && el ? el.textContent.trim() : '';
+        if (list) list.style.display = 'none';
+        // Fire any registered onchange hook (e.g. carry direction preview).
+        if (this._playerFieldHooks && this._playerFieldHooks[fieldId]) this._playerFieldHooks[fieldId](id);
+      },
+
+      _filterPlayerField(fieldId, q) {
+        const list = document.getElementById(fieldId + '_list');
+        if (list) list.style.display = 'block';
+        const needle = (q || '').toLowerCase().trim();
+        // Typing invalidates a prior pick until they choose again.
+        const hidden = document.getElementById(fieldId);
+        if (hidden) hidden.value = '';
+        document.querySelectorAll(`.player-pick-row[data-field="${fieldId}"]`).forEach(row => {
+          const name = row.getAttribute('data-name') || '';
+          const isNone = row.getAttribute('data-id') === '';
+          row.style.display = (isNone || name.includes(needle)) ? '' : 'none';
+        });
+      },
+
       async showNewCarryModal() {
         const players = (await db.getAll('players')).filter(p => p.role !== 'dealer' && !p.deleted_at);
         const modal = document.getElementById('modal');
@@ -9506,10 +9556,7 @@
         document.getElementById('modalBody').innerHTML = `
           <div class="form-group">
             <label class="form-label">Player</label>
-            <select class="form-input" id="newCarryPlayer">
-              <option value="">— select —</option>
-              ${players.map(p => `<option value="${p.id}">${p.name}</option>`).join('')}
-            </select>
+            ${this._playerSearchFieldHTML({ fieldId:'newCarryPlayer', players, placeholder:'🔍 Search player…' })}
           </div>
           <div class="form-group">
             <label class="form-label">Direction</label>
@@ -9528,10 +9575,7 @@
           </div>
           <div class="form-group">
             <label class="form-label">Counterparty <span style="font-size:11px; color:var(--text-secondary);">(optional — who it's with)</span></label>
-            <select class="form-input" id="newCarryCounterparty">
-              <option value="">— none / settle with house —</option>
-              ${players.map(p => `<option value="${p.id}">${p.name}</option>`).join('')}
-            </select>
+            ${this._playerSearchFieldHTML({ fieldId:'newCarryCounterparty', players, placeholder:'🔍 Search counterparty…', allowNone:true, noneLabel:'— none / settle with house —' })}
             <div style="font-size:11px; color:var(--text-secondary); margin-top:6px;">
               If set, a mirrored carry is created on their side automatically (e.g. one owes $25k ⟺ the other is owed $25k).
             </div>
@@ -10984,7 +11028,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v46';
+    const APP_VERSION = 'v47';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
