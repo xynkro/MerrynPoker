@@ -2450,7 +2450,13 @@
           localTime  = local?.updated_at  ? new Date(local.updated_at).getTime()  : 0;
           remoteTime = remote.updated_at  ? new Date(remote.updated_at).getTime() : 0;
         }
-        if (localTime >= remoteTime) return; // local is at least as fresh — ignore
+        // A remote DELETION always wins, regardless of timestamp ordering. A
+        // soft-delete must never be ignored just because the local copy has a
+        // newer updated_at — that's what let merged-away duplicate players keep
+        // re-appearing on other devices. Only short-circuit on freshness when
+        // it's NOT an incoming delete-of-a-live-record.
+        const isIncomingDelete = remote.deleted_at && local && !local.deleted_at;
+        if (!isIncomingDelete && localTime >= remoteTime) return; // local is at least as fresh — ignore
 
         // Concurrent-edit warning (UC-3): another device just overwrote a money
         // record this device had set to a DIFFERENT value. The float/stash rows
@@ -11028,7 +11034,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v47';
+    const APP_VERSION = 'v48';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
