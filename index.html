@@ -4077,6 +4077,10 @@
             `;
           }
 
+          // Standard buy-in for this table → powers the one-tap rebuy button.
+          const stdBuyin = this._sessionStandardBuyin(otherEntries);
+          const stdLabel = stdBuyin % 1000 === 0 ? `${stdBuyin / 1000}k` : stdBuyin.toLocaleString();
+          const canRebuy = isActive && this.isDealer();
           for (const entry of otherEntries) {
             const player = playerMap[entry.player_id];
             const totalBuyin = (entry.buy_ins || []).reduce((sum, b) => sum + b.amount, 0);
@@ -4093,7 +4097,9 @@
                 <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
                   ${isCashedOut
                     ? `<span style="font-size: 14px; font-weight: 800; color: ${netPl >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)'};">${netPl >= 0 ? '+' : ''}$${netPl.toLocaleString()}</span>`
-                    : `<span style="color: var(--accent-warning); font-size: 11px;">● in play</span>`
+                    : `<span style="color: var(--accent-warning); font-size: 11px;">● in play</span>
+                       ${canRebuy ? `<button onclick="event.stopPropagation(); app.quickRebuy('${entry.id}', ${stdBuyin})" title="Add a $${stdBuyin.toLocaleString()} rebuy" aria-label="Add ${stdLabel} rebuy for ${this._esc(player?.name || 'player')}"
+                          style="padding: 8px 12px; border-radius: 8px; background: var(--accent-warning)22; border: 1px solid var(--accent-warning)55; color: var(--accent-warning); font-size: 14px; font-weight: 800; cursor: pointer; touch-action: manipulation; white-space: nowrap; min-height: 40px;">+${stdLabel}</button>` : ''}`
                   }
                 </div>
               </div>
@@ -4344,6 +4350,41 @@
         this.closeActionSheet();
         this.renderSessionScreen();
         this.showToast('Buy-in added');
+        this.autoSync();
+      },
+
+      // The session's "standard" buy-in — the most common single buy-in amount
+      // across all players this session, so the one-tap card rebuy matches how
+      // this table actually plays (5k / 10k / 25k tables differ). Falls back to
+      // 10k. Used by the inline + rebuy button so the dealer's most frequent
+      // action is a single tap, not a 3-tap trip through the action sheet.
+      _sessionStandardBuyin(entries) {
+        const freq = {};
+        for (const e of (entries || [])) {
+          for (const b of (e.buy_ins || [])) {
+            if (b.amount > 0) freq[b.amount] = (freq[b.amount] || 0) + 1;
+          }
+        }
+        let best = 0, bestCount = 0;
+        for (const [amt, count] of Object.entries(freq)) {
+          if (count > bestCount) { bestCount = count; best = Number(amt); }
+        }
+        return best || 10000;
+      },
+
+      // One-tap rebuy straight from the player card — no action sheet. Adds the
+      // session standard amount and shows a confirming toast with the new total.
+      async quickRebuy(entryId, amount) {
+        const entry = await db.get('sessionEntries', entryId);
+        if (!entry || entry.cash_out !== null && entry.cash_out !== undefined) return;
+        entry.buy_ins = entry.buy_ins || [];
+        entry.buy_ins.push({ amount, timestamp: new Date().toISOString() });
+        entry.updated_at = new Date().toISOString();
+        await db.put('sessionEntries', entry);
+        const total = entry.buy_ins.reduce((s, b) => s + b.amount, 0);
+        const player = await app.getPlayer(entry.player_id);
+        this.renderSessionScreen();
+        this.showToast(`${player?.name || 'Player'} +$${amount.toLocaleString()} · $${total.toLocaleString()} in`);
         this.autoSync();
       },
 
