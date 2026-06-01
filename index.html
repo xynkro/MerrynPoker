@@ -8763,11 +8763,33 @@
           }
         }
 
-        if (recs.length > 0) {
+        // Net balances per person (Splitwise-style rollup): one signed number
+        // per player across ALL their open carries. Shown above the transfer
+        // recommendations so you can see who's net up/down at a glance.
+        const netRows = Object.entries(playerNets)
+          .map(([pid, net]) => ({ player: players.find(p => p.id === pid), net }))
+          .filter(r => r.player && r.player.role !== 'bank' && Math.abs(r.net) >= 1)
+          .sort((a, b) => b.net - a.net); // owed (positive) first, owes (negative) last
+
+        if (recs.length > 0 || netRows.length > 0) {
           let recHtml = `
             <div style="background: var(--bg-tertiary); border: 1px solid var(--accent-primary)44; border-radius: 12px; padding: 14px; margin-bottom: 12px;">
-              <div style="font-size: 14px; font-weight: 700; color: var(--accent-primary); margin-bottom: 10px;">💡 Settlement Recommendations</div>
           `;
+          if (netRows.length > 0) {
+            recHtml += `<div style="font-size: 14px; font-weight: 700; color: var(--accent-brand); margin-bottom: 10px;">⚖️ Net Balances</div>`;
+            for (const r of netRows) {
+              const owed = r.net > 0;
+              recHtml += `
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; font-size:14px;">
+                  <span style="font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${this._esc(r.player.name)}</span>
+                  <span style="font-weight:700; white-space:nowrap; color:${owed ? 'var(--accent-success)' : 'var(--accent-danger)'};">
+                    ${owed ? 'is owed' : 'owes'} $${Math.abs(r.net).toLocaleString()}
+                  </span>
+                </div>`;
+            }
+            if (recs.length > 0) recHtml += `<div style="border-top:1px solid var(--border-color); margin:10px 0;"></div>`;
+          }
+          if (recs.length > 0) recHtml += `<div style="font-size: 14px; font-weight: 700; color: var(--accent-primary); margin-bottom: 10px;">💡 Settlement Recommendations</div>`;
           for (const r of recs) {
             const tagColor = r.tag === 'Float' ? 'var(--accent-warning)' : 'var(--accent-primary)';
             // Grid (not flex) so the amount column lines up across every row
@@ -10848,7 +10870,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v43';
+    const APP_VERSION = 'v44';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
