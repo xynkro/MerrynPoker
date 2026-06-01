@@ -450,6 +450,21 @@
       font-weight: normal;
     }
 
+    /* Card-room empty state — a muted gold suit glyph instead of bare grey text */
+    .empty-state {
+      text-align: center;
+      color: var(--text-secondary);
+      padding: 44px 20px;
+      font-size: 14px;
+    }
+    .empty-state .glyph {
+      font-size: 40px;
+      line-height: 1;
+      margin-bottom: 12px;
+      color: var(--accent-brand);
+      opacity: 0.28;
+    }
+
     .section-title {
       font-size: 20px;
       font-weight: 600;
@@ -525,15 +540,17 @@
 
     .session-item {
       background: var(--bg-secondary);
-      border: 1px solid var(--border-color);
+      border: 1px solid rgba(232, 213, 163, 0.08);
       border-radius: var(--border-radius-card);
       padding: 14px 16px;
       cursor: pointer;
-      transition: border-color 0.2s;
+      transition: border-color 0.2s, transform 0.12s;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.04);
     }
 
     .session-item:active {
-      border-color: var(--accent-primary);
+      border-color: var(--accent-brand);
+      transform: scale(0.99);
     }
 
     .session-date {
@@ -603,6 +620,16 @@
       align-items: center;
       gap: 10px;
       box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+    }
+
+    /* One-shot gold flash when a rebuy lands (the card re-renders, so we flash
+       the freshly-rendered card rather than the tapped button). */
+    @keyframes rebuyFlash {
+      0%   { box-shadow: 0 0 0 0 rgba(232,213,163,0.55); border-color: var(--accent-brand); }
+      100% { box-shadow: 0 0 0 16px rgba(232,213,163,0); }
+    }
+    .player-card.rebuy-flash {
+      animation: rebuyFlash 0.5s ease-out;
     }
 
     /* Alternating row colors so adjacent cards are visually distinct.
@@ -1089,11 +1116,12 @@
 
     .carry-item {
       background: var(--bg-secondary);
-      border: 1px solid var(--border-color);
+      border: 1px solid rgba(232, 213, 163, 0.08);
       border-radius: var(--border-radius-card);
       padding: 16px;
       margin-bottom: 12px;
       cursor: pointer;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.04);
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -1205,12 +1233,13 @@
 
     .transaction-item {
       background: var(--bg-secondary);
-      border: 1px solid var(--border-color);
+      border: 1px solid rgba(232, 213, 163, 0.08);
       border-radius: var(--border-radius-card);
       padding: 16px;
       display: flex;
       align-items: center;
       gap: 12px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.04);
     }
 
     .transaction-icon {
@@ -3499,7 +3528,7 @@
             <button class="btn btn-secondary" onclick="app.adjustDealerStash()" style="flex: 1; font-size: 13px;">⚙️ Adjust</button>
           </div>
           <div style="max-height: 300px; overflow-y: auto;">
-            ${txHtml || '<div style="text-align: center; color: var(--text-secondary); padding: 20px;">No transactions yet</div>'}
+            ${txHtml || '<div class="empty-state"><div class="glyph">♥</div>No transactions yet</div>'}
           </div>
         `;
         document.getElementById('modalFooter').innerHTML = `<button class="btn btn-secondary btn-block" onclick="app.closeModal()">Close</button>`;
@@ -4033,7 +4062,7 @@
 
         // Player cards
         if (entries.length === 0) {
-          html += `<div style="text-align: center; color: var(--text-secondary); padding: 40px 20px;">No players added yet. Tap "Add Player" to start.</div>`;
+          html += `<div class="empty-state"><div class="glyph">🂠</div>No players yet. Tap "+ Add Player" to start the night.</div>`;
         }
 
         // Auto-calculate dealer's take: sum of all other players' buy-ins minus cash-outs
@@ -4128,7 +4157,7 @@
             const netPl = isCashedOut ? (entry.cash_out - totalBuyin) : null;
             const roleBadge = player?.role === 'bank' ? ' 🏦' : '';
             html += `
-              <div class="player-card ${isCashedOut ? 'cashed-out' : ''}" onclick="app.showPlayerActionSheet_id('${entry.id}')" style="cursor: pointer; ${isCashedOut ? '' : 'border-color: var(--accent-warning)33;'}">
+              <div class="player-card ${isCashedOut ? 'cashed-out' : ''}" data-entry-id="${entry.id}" onclick="app.showPlayerActionSheet_id('${entry.id}')" style="cursor: pointer; ${isCashedOut ? '' : 'border-color: var(--accent-warning)33;'}">
                 <div style="flex: 1; min-width: 0;">
                   <div class="player-name">${player?.name || '?'}${roleBadge}</div>
                   <div style="font-size: 12px; color: var(--text-secondary);">${rebuyCount}x · $${totalBuyin.toLocaleString()}</div>
@@ -4360,15 +4389,22 @@
           `;
         }
 
+        // Rebuy presets adapt to THIS table's standard buy-in (1×/2×/4×/10×),
+        // so a 25k table shows +25k/+50k/+100k/+250k instead of hardcoded 5/10/20/50k.
+        const sessEntries = session ? await db.getAllByIndex('sessionEntries', 'session_id', session.id) : [];
+        const std = this._sessionStandardBuyin(sessEntries);
+        const presets = [std, std * 2, std * 4, std * 10];
+        const presetBtns = presets.map(a => {
+          const lbl = a % 1000 === 0 ? `+${a / 1000}k` : `+${a.toLocaleString()}`;
+          return `<button class="btn-amount" onclick="app.addBuyin('${entry.id}', ${a})">${lbl}</button>`;
+        }).join('');
+
         const content = document.getElementById('actionSheetContent');
         content.innerHTML = `
           ${historyHtml}
           ${!isCashedOut ? `
           <div class="quick-rebuy-buttons">
-            <button class="btn-amount" onclick="app.addBuyin('${entry.id}', 5000)">+5k</button>
-            <button class="btn-amount" onclick="app.addBuyin('${entry.id}', 10000)">+10k</button>
-            <button class="btn-amount" onclick="app.addBuyin('${entry.id}', 20000)">+20k</button>
-            <button class="btn-amount" onclick="app.addBuyin('${entry.id}', 50000)">+50k</button>
+            ${presetBtns}
           </div>
           <button class="btn btn-secondary btn-block" onclick="app.showCustomRebuyModal('${entry.id}')">Custom Amount</button>
           <button class="btn btn-primary btn-block" onclick="app.showCashOutModal('${entry.id}')">💰 Cash Out</button>
@@ -4424,6 +4460,11 @@
         const total = entry.buy_ins.reduce((s, b) => s + b.amount, 0);
         const player = await app.getPlayer(entry.player_id);
         this.renderSessionScreen();
+        // Gold flash on the freshly-rendered card so the rebuy feels confirmed (UI-5).
+        requestAnimationFrame(() => {
+          const card = document.querySelector(`.player-card[data-entry-id="${entryId}"]`);
+          if (card) { card.classList.add('rebuy-flash'); setTimeout(() => card.classList.remove('rebuy-flash'), 600); }
+        });
         // Undo toast (MP-1): a mis-tap on the always-visible +Nk button silently
         // moves money, so offer a one-tap reversal that removes exactly the
         // buy-in we just added (always the last one).
@@ -6948,7 +6989,10 @@
                   <span id="partialHint_${pos.id}" style="flex:1;">rest auto-parks as carry</span>
                 </div>
               ` : (pos.inPlay
-                ? `<div style="font-size: 12px; color: var(--accent-warning); margin-top: 4px; font-weight:700;">⚠️ Still in play — not cashed out. Their buy-in is counting as dealer take.</div>`
+                ? `<div style="margin-top: 6px;">
+                     <div style="font-size: 12px; color: var(--accent-warning); font-weight:700;">⚠️ Still in play — not cashed out. Their buy-in is counting as dealer take.</div>
+                     <button onclick="app.goCashOutPlayer('${pos.id}')" style="margin-top:8px; padding:8px 14px; border-radius:8px; background:var(--accent-warning)22; border:1px solid var(--accent-warning)66; color:var(--accent-warning); font-size:13px; font-weight:700; cursor:pointer; touch-action:manipulation;">↩ Cash ${this._esc(pos.player?.name || 'them')} out</button>
+                   </div>`
                 : `<div style="font-size: 12px; color: var(--accent-success); margin-top: 4px;">✓ ${pos.handled ? 'Settled during play' : 'Fully settled at table'}</div>`)}
             `;
           }
@@ -6979,6 +7023,19 @@
 
         app.updateSettlementProjection();
         app.renderPaymentRecommendations(positions, players);
+      },
+
+      // From the settlement screen's in-play warning: jump back to the session
+      // Cash Out tab and focus that player's row so the dealer can settle them
+      // before committing (closes the loop on the in-play-player gap).
+      async goCashOutPlayer(entryId) {
+        this.sessionTab = 'cashout';
+        await this.showScreen('sessionScreen');
+        await this.renderSessionScreen();
+        setTimeout(() => {
+          const inp = document.getElementById('co_' + entryId);
+          if (inp) { inp.scrollIntoView({ block: 'center', behavior: 'smooth' }); inp.focus(); }
+        }, 80);
       },
 
       setSettlementMethod(entryId, method) {
@@ -7376,7 +7433,7 @@
         const sorted = [...sessions].sort((a, b) => new Date(b.date) - new Date(a.date));
 
         if (sorted.length === 0) {
-          list.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 40px 20px; font-size: 16px;">No sessions yet</div>';
+          list.innerHTML = '<div class="empty-state"><div class="glyph">♠</div>No sessions yet — start a game from the Session tab.</div>';
           return;
         }
 
@@ -8710,7 +8767,7 @@
         const openList = document.getElementById('carriesOpenList');
         openList.innerHTML = '';
         if (openCarries.length === 0) {
-          openList.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 20px;">No open carries</div>';
+          openList.innerHTML = '<div class="empty-state"><div class="glyph">♣</div>No open carries — everyone\'s square.</div>';
         } else {
           const canDeleteCarry = this.isDealer();
           openCarries.sort((a, b) => Math.abs(b.amount_sgd) - Math.abs(a.amount_sgd)).forEach(carry => {
@@ -8794,7 +8851,7 @@
         const clearedContent = document.getElementById('carriesClearedContent');
         clearedContent.innerHTML = '';
         if (clearedCarries.length === 0) {
-          clearedContent.innerHTML = '<div style="text-align: center; color: var(--text-secondary); padding: 20px;">No cleared carries</div>';
+          clearedContent.innerHTML = '<div class="empty-state"><div class="glyph">♦</div>No cleared carries yet.</div>';
         } else {
           clearedCarries.sort((a, b) => new Date(b.cleared_at) - new Date(a.cleared_at)).forEach(carry => {
             const player = players.find(p => p.id === carry.player_id);
