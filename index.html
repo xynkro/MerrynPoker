@@ -8902,12 +8902,16 @@
             const player = players.find(p => p.id === carry.player_id);
             const item = document.createElement('div');
             item.className = 'carry-item';
+            item.style.cursor = 'pointer';
+            // Tappable → opens detail where the Undo / reopen button lives.
+            item.onclick = () => this.showCarryDetail(carry);
             item.innerHTML = `
               <div class="carry-item-left">
                 <div class="carry-item-name">${this._esc(player?.name || 'Unknown')}</div>
                 <div class="carry-item-meta">
                   <span style="display:inline-block; padding:2px 8px; border-radius:10px; background:var(--accent-success)22; color:var(--accent-success); font-size:11px; font-weight:600;">${this._carryClearedLabel(carry.cleared_via)}</span>
                   <span style="margin-left:6px;">${this._fmtDate(carry.cleared_at)}</span>
+                  <span style="margin-left:6px; opacity:0.55;">· tap to undo</span>
                 </div>
               </div>
               <div class="carry-item-amount ${carry.amount_sgd > 0 ? 'positive' : 'negative'}">
@@ -10980,7 +10984,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v45';
+    const APP_VERSION = 'v46';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
