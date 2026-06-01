@@ -4196,7 +4196,10 @@
                     ? `<span style="font-size: 14px; font-weight: 800; color: ${netPl >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)'};">${netPl >= 0 ? '+' : ''}$${netPl.toLocaleString()}</span>`
                     : `<span style="color: var(--accent-warning); font-size: 11px;">● in play</span>
                        ${canRebuy ? `<button onclick="event.stopPropagation(); app.quickRebuy('${entry.id}', ${stdBuyin})" title="Add a $${stdBuyin.toLocaleString()} rebuy" aria-label="Add ${stdLabel} rebuy for ${this._esc(player?.name || 'player')}"
-                          style="padding: 8px 12px; border-radius: 8px; background: var(--accent-warning)22; border: 1px solid var(--accent-warning)55; color: var(--accent-warning); font-size: 14px; font-weight: 800; cursor: pointer; touch-action: manipulation; white-space: nowrap; min-height: 40px;">+${stdLabel}</button>` : ''}`
+                          style="display:flex; flex-direction:column; align-items:center; line-height:1.1; padding: 5px 12px; border-radius: 8px; background: var(--accent-warning); border: none; color: #1a1a2e; cursor: pointer; touch-action: manipulation; white-space: nowrap; min-height: 44px;">
+                            <span style="font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:0.3px; opacity:0.7;">Re-buy</span>
+                            <span style="font-size:15px; font-weight:800;">+${stdLabel}</span>
+                          </button>` : ''}`
                   }
                 </div>
               </div>
@@ -11088,7 +11091,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v49';
+    const APP_VERSION = 'v50';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
