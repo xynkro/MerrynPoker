@@ -10587,13 +10587,67 @@
         }, 60);
       },
 
+      // Merge duplicate-named players ON THIS DEVICE (the source of truth), then
+      // HARD-delete the losers so the removal actually propagates (soft-deletes
+      // were being rejected by the sync freshness check). For each name: keep the
+      // record with the most entries, repoint all entries/carries/tablePayments
+      // to it, then physically remove the duplicates from IndexedDB + Firebase.
+      async mergeDuplicatePlayers() {
+        const players = (await db.getAll('players')).filter(p => !p.deleted_at);
+        const entries = await db.getAll('sessionEntries');
+        const carries = await db.getAll('carryBalances');
+        const tps = await db.getAll('tablePayments');
+        const ec = id => entries.filter(e => e.player_id === id).length;
+
+        const groups = {};
+        players.forEach(p => { const k=(p.name||'').trim().toLowerCase(); (groups[k]=groups[k]||[]).push(p); });
+        const dupGroups = Object.entries(groups).filter(([k,g]) => g.length > 1);
+        if (dupGroups.length === 0) { this.showToast('No duplicate names'); return; }
+
+        const totalDupRecords = dupGroups.reduce((s,[k,g]) => s + (g.length-1), 0);
+        if (!confirm(`Merge ${dupGroups.length} duplicate name(s)?\n\nFor each, the record with the most game history is kept and the other ${totalDupRecords} record(s) are merged into it (entries, carries and payments are moved over, then the duplicates are removed). This cannot be undone.`)) return;
+
+        const now = new Date().toISOString();
+        let movedEntries=0, movedCarries=0, movedTps=0, removed=0;
+        const hardRemove = async (id) => {
+          await new Promise(r=>{ const tx=db.instance.transaction(['players'],'readwrite'); tx.objectStore('players').delete(id); tx.oncomplete=r; });
+          if (typeof cloud!=='undefined' && cloud._fb) { try { await cloud._fb.ref('players/'+id).remove(); } catch(e){} }
+        };
+
+        for (const [name, group] of dupGroups) {
+          // Keeper = most entries (prefer bank/dealer role record if tied on a special role).
+          const sorted = [...group].sort((a,b) => ec(b.id) - ec(a.id));
+          const keeper = sorted[0];
+          for (const loser of sorted.slice(1)) {
+            for (const e of entries.filter(x => x.player_id === loser.id)) { e.player_id = keeper.id; e.updated_at = now; await db.put('sessionEntries', e); movedEntries++; }
+            for (const c of carries.filter(x => x.player_id === loser.id)) { c.player_id = keeper.id; c.updated_at = now; await db.put('carryBalances', c); movedCarries++; }
+            for (const t of tps) {
+              let ch=false;
+              if (t.from_player_id===loser.id){ t.from_player_id=keeper.id; ch=true; }
+              if (t.to_player_id===loser.id){ t.to_player_id=keeper.id; ch=true; }
+              if (ch){ t.updated_at=now; await db.put('tablePayments', t); movedTps++; }
+            }
+            await hardRemove(loser.id);
+            removed++;
+          }
+        }
+        this.showToast(`Merged ${removed} duplicate(s) · moved ${movedEntries} entries`);
+        this.showAdminPlayerList();
+        if (typeof this.autoSync === 'function') this.autoSync();
+      },
+
       async showAdminPlayerList() {
         if (!this.isDealer()) { this.showToast('Dealer/admin only'); return; }
         const players = (await db.getAll('players')).filter(p => !p.deleted_at).sort((a,b) => a.name.localeCompare(b.name));
         const modal = document.getElementById('modal');
         document.getElementById('modalTitle').textContent = 'Player Profiles';
+        // Detect duplicate names (same name across 2+ live records) to offer a merge.
+        const nameGroups = {};
+        players.forEach(p => { const k=(p.name||'').trim().toLowerCase(); (nameGroups[k]=nameGroups[k]||[]).push(p); });
+        const dupCount = Object.values(nameGroups).filter(g => g.length > 1).length;
         document.getElementById('modalBody').innerHTML = `
           <button class="btn btn-primary btn-block" style="margin-bottom:12px;" onclick="app.adminAddPlayer()">+ Add New Player</button>
+          ${dupCount > 0 ? `<button class="btn btn-block" style="margin-bottom:12px;background:var(--accent-warning)22;color:var(--accent-warning);border:1px solid var(--accent-warning)55;" onclick="app.mergeDuplicatePlayers()">🧹 Merge ${dupCount} duplicate name${dupCount>1?'s':''}</button>` : ''}
           <div style="max-height:58dvh;overflow-y:auto;-webkit-overflow-scrolling:touch;">
             ${players.map(p => {
               const roleIcon = p.role === 'bank' ? '🏦' : p.role === 'dealer' ? '🃏' : '';
@@ -11034,7 +11088,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v48';
+    const APP_VERSION = 'v49';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
