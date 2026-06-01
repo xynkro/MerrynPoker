@@ -5,7 +5,7 @@
 //   • Static assets (icons, bg images, manifest) → CACHE-FIRST.
 //   • Cross-origin (Apps Script, Sheets API) → never intercepted.
 
-const CACHE = 'merryn-v37';
+const CACHE = 'merryn-v38';
 
 const STATIC_ASSETS = [
   'manifest.json',
@@ -31,7 +31,7 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== 'merryn-fonts').map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -46,25 +46,6 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
 
   const url = new URL(req.url);
-
-  // Google Fonts (display font) — cache-first so the headings render on a cold
-  // OFFLINE launch after the first online load. Stored in a separate long-lived
-  // cache that isn't purged on version bumps (fonts rarely change).
-  if (url.origin === 'https://fonts.googleapis.com' || url.origin === 'https://fonts.gstatic.com') {
-    event.respondWith(
-      caches.open('merryn-fonts').then((cache) =>
-        cache.match(req).then((cached) => {
-          const network = fetch(req).then((resp) => {
-            if (resp && (resp.ok || resp.type === 'opaque')) cache.put(req, resp.clone());
-            return resp;
-          }).catch(() => cached);
-          return cached || network;
-        })
-      )
-    );
-    return;
-  }
-
   if (url.origin !== self.location.origin) return;
 
   // App shell (navigation requests + index.html) → network-first
