@@ -1685,6 +1685,10 @@
         <div class="settlement-container">
           <div class="zero-sum-banner" id="zeroSumBanner"></div>
 
+          <!-- Cash on table reconcile (mini-Splitwise): collected from losers vs
+               paid out to cash winners; net = physical cash left in dealer's hand. -->
+          <div id="cashPotPanel" style="display:none;"></div>
+
           <div class="float-feasibility">
             <div class="float-feasibility-label">Derrick's Float Impact</div>
             <div class="float-feasibility-values">
@@ -6924,28 +6928,12 @@
       },
 
       async endSession() {
-        const entries = await db.getAllByIndex('sessionEntries', 'session_id', this.currentSession.id);
-        const players = await db.getAll('players');
-        const playerMap = {};
-        for (const p of players) playerMap[p.id] = p;
-
-        const otherEntries = entries.filter(e => playerMap[e.player_id]?.role !== 'dealer');
-        const stillIn = otherEntries.filter(e => e.cash_out === null || e.cash_out === undefined);
-        if (stillIn.length > 0) {
-          const names = stillIn.map(e => playerMap[e.player_id]?.name || '?').join(', ');
-          if (!confirm(`${stillIn.length} player(s) have NOT cashed out: ${names}.\n\nIf you continue, their buy-ins will be counted as dealer take (treated as a total loss for them). Cash them out first unless that's really what you want.\n\nEnd session anyway?`)) return;
-        }
-
-        // Auto-finalize the Dealer entry
-        const dealerEntry = entries.find(e => playerMap[e.player_id]?.role === 'dealer');
-        if (dealerEntry) {
-          const totalBuyIns = otherEntries.reduce((s, e) => s + (e.buy_ins || []).reduce((ss, b) => ss + b.amount, 0), 0);
-          const totalCashOuts = otherEntries.reduce((s, e) => s + (e.cash_out || 0), 0);
-          dealerEntry.cash_out = totalBuyIns - totalCashOuts;
-          dealerEntry.net_pl = dealerEntry.cash_out; // no buy-ins, so net_pl = cash_out
-          await db.put('sessionEntries', dealerEntry);
-        }
-
+        // No more scary "their buy-ins become a total loss" gate — the reconcile
+        // screen now lets the dealer cash out anyone still in play inline (the
+        // purgatory step), and Commit Settlement still guards any left uncashed.
+        // Auto-finalise the house take; it's re-finalised live as players are
+        // cashed out on the reconcile screen (_recomputeDealerEntry).
+        await this._recomputeDealerEntry(this.currentSession.id);
         this.renderSettlementScreen();
         this.showScreen('settlementScreen');
       },
@@ -7100,7 +7088,18 @@
                   <div class="settlement-value ${pos.remaining > 0 ? 'positive' : pos.remaining < 0 ? 'negative' : ''}" style="font-weight: 800;">${pos.remaining > 0 ? '+' : ''}$${Math.abs(pos.remaining).toLocaleString()}</div>
                 </div>
               </div>
-              ${pos.remaining !== 0 ? `
+              ${pos.inPlay ? `
+                <div style="margin-top: 10px; padding:10px; background:var(--accent-warning)11; border:1px solid var(--accent-warning)44; border-radius:10px;">
+                  <div style="font-size: 12px; color: var(--accent-warning); font-weight:700; margin-bottom:6px;">⏳ Still in play — enter final chips to cash ${this._esc(pos.player?.name || 'them')} out</div>
+                  <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <span style="font-size:12px; color:var(--text-secondary);">Bought in $${(pos.buy_ins || []).reduce((s,b)=>s+(b.amount||0),0).toLocaleString()} · Cash out</span>
+                    <input type="text" inputmode="numeric" id="cashout_${pos.id}" placeholder="0" onclick="this.select()"
+                      oninput="app._fmtBuyinInput(this)" onkeydown="if(event.key==='Enter'){event.preventDefault(); app.setSettlementCashout('${pos.id}');}"
+                      style="width:120px; padding:8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:8px; font-size:16px; text-align:right; font-weight:700;">
+                    <button onclick="app.setSettlementCashout('${pos.id}')" style="padding:9px 14px; border-radius:8px; background:var(--accent-success); border:none; color:#04140b; font-weight:800; font-size:13px; cursor:pointer; touch-action:manipulation;">✓ Cash out</button>
+                  </div>
+                </div>
+              ` : (pos.remaining !== 0 ? `
                 <div class="settlement-toggle" style="margin-top: 12px; flex-wrap: wrap; gap: 6px;">
                   <button class="btn btn-secondary active" data-pos-id="${pos.id}" data-method="park" onclick="app.setSettlementMethod('${pos.id}', 'park')">📋 Carry</button>
                   <button class="btn btn-secondary" data-pos-id="${pos.id}" data-method="cash" onclick="app.setSettlementMethod('${pos.id}', 'cash')">Cash</button>
@@ -7114,19 +7113,14 @@
                     style="width:110px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
                   <span id="partialHint_${pos.id}" style="flex:1;">rest auto-parks as carry</span>
                 </div>
-              ` : (pos.inPlay
-                ? `<div style="margin-top: 6px;">
-                     <div style="font-size: 12px; color: var(--accent-warning); font-weight:700;">⚠️ Still in play — not cashed out. Their buy-in is counting as dealer take.</div>
-                     <button onclick="app.goCashOutPlayer('${pos.id}')" style="margin-top:8px; padding:8px 14px; border-radius:8px; background:var(--accent-warning)22; border:1px solid var(--accent-warning)66; color:var(--accent-warning); font-size:13px; font-weight:700; cursor:pointer; touch-action:manipulation;">↩ Cash ${this._esc(pos.player?.name || 'them')} out</button>
-                   </div>`
-                : `<div style="font-size: 12px; color: var(--accent-success); margin-top: 4px;">✓ ${pos.handled ? 'Settled during play' : 'Fully settled at table'}</div>`)}
+              ` : `<div style="font-size: 12px; color: var(--accent-success); margin-top: 4px;">✓ ${pos.handled ? 'Settled during play' : 'Fully settled at table'}</div>`)}
             `;
           }
           table.appendChild(row);
         }
 
         // Store settlement data for commit
-        app.settlementData = { session: this.currentSession, positions, floatCash, floatUsdt, entries, carries, players, usdtRate: FALLBACK_USDT_SGD };
+        app.settlementData = { session: this.currentSession, positions, floatCash, floatUsdt, entries, carries, players, tablePayments, usdtRate: FALLBACK_USDT_SGD };
 
         // Wire the USDT/SGD rate input — live fetch + manual override.
         const rateInp = document.getElementById('settlementUsdtRate');
@@ -7203,8 +7197,106 @@
         }
       },
 
+      // Purgatory reconcile: cash an in-play player out right on the settlement
+      // screen. Sets their final chips → net_pl, re-finalises the dealer take so
+      // zero-sum holds, then re-renders so their settle options (cash/float/carry)
+      // appear. No money leaves until Commit Settlement.
+      async setSettlementCashout(entryId) {
+        const inp = document.getElementById('cashout_' + entryId);
+        if (!inp) return;
+        const raw = (inp.value || '').replace(/[^0-9]/g, '');
+        if (raw === '') { this.showToast('Enter a cash-out amount (0 if they busted)'); inp.focus(); return; }
+        const cashOut = parseInt(raw, 10) || 0;
+        const entry = await db.get('sessionEntries', entryId);
+        if (!entry) return;
+        const totalBuyIn = (entry.buy_ins || []).reduce((s, b) => s + (b.amount || 0), 0);
+        entry.cash_out = cashOut;
+        entry.net_pl = cashOut - totalBuyIn;
+        entry.updated_at = new Date().toISOString();
+        await db.put('sessionEntries', entry);
+        await this._recomputeDealerEntry(entry.session_id);
+        this.showToast(`Cashed out $${cashOut.toLocaleString()}`);
+        await this.renderSettlementScreen();
+      },
+
+      // Recompute the house (dealer) entry = total buy-ins − total cash-outs of
+      // everyone else. Keeps the zero-sum check intact whenever a cash-out changes.
+      async _recomputeDealerEntry(sessionId) {
+        const entries = await db.getAllByIndex('sessionEntries', 'session_id', sessionId);
+        const players = await db.getAll('players');
+        const pm = {}; players.forEach(p => pm[p.id] = p);
+        const dealerEntry = entries.find(e => pm[e.player_id]?.role === 'dealer');
+        if (!dealerEntry) return;
+        const others = entries.filter(e => pm[e.player_id]?.role !== 'dealer');
+        const totalBuyIns  = others.reduce((s, e) => s + (e.buy_ins || []).reduce((ss, b) => ss + (b.amount || 0), 0), 0);
+        const totalCashOuts = others.reduce((s, e) => s + (e.cash_out || 0), 0);
+        dealerEntry.cash_out = totalBuyIns - totalCashOuts;
+        dealerEntry.net_pl = dealerEntry.cash_out;
+        dealerEntry.updated_at = new Date().toISOString();
+        await db.put('sessionEntries', dealerEntry);
+      },
+
+      // 💵 Cash-on-table reconcile panel. The cash pot is just a live tally: cash
+      // collected from losers who settle via Cash, minus cash paid to winners who
+      // take Cash, plus any during-game cash-on-table rows. Net = physical cash
+      // left in the dealer's hand. Pure display — no ledger writes (Cash settles
+      // peer-to-peer), so it never double-counts the float.
+      _updateCashPotPanel() {
+        const panel = document.getElementById('cashPotPanel');
+        if (!panel || !app.settlementData) return;
+        const { positions, tablePayments } = app.settlementData;
+        const potExisting = (tablePayments || [])
+          .filter(tp => tp.from_source === 'cash_pot')
+          .reduce((s, tp) => s + (tp.amount || 0), 0);
+
+        let cashIn = 0, cashOut = 0;
+        const payers = [], receivers = [];
+        for (const pos of positions) {
+          if (pos.player?.role === 'bank' || pos.player?.role === 'dealer') continue;
+          if (pos.settlement_method !== 'cash') continue;
+          const amt = pos.remaining !== undefined ? pos.remaining : pos.net_position;
+          if (!amt) continue;
+          const mag = (pos.settle_partial && pos.settle_partial > 0 && pos.settle_partial < Math.abs(amt))
+            ? pos.settle_partial : Math.abs(amt);
+          if (amt < 0) { cashIn += mag; payers.push(`${pos.player?.name} $${mag.toLocaleString()}`); }
+          else { cashOut += mag; receivers.push(`${pos.player?.name} $${mag.toLocaleString()}`); }
+        }
+
+        if (cashIn === 0 && cashOut === 0 && potExisting === 0) { panel.style.display = 'none'; return; }
+
+        const net = potExisting + cashIn - cashOut; // +ve = leftover in dealer's hand; -ve = short
+        const netColor = net === 0 ? 'var(--accent-success)' : net > 0 ? 'var(--accent-warning)' : 'var(--accent-danger)';
+        const netHint = net === 0
+          ? '✓ Cash balances — every dollar collected goes straight to a cash winner'
+          : net > 0
+            ? `$${net.toLocaleString()} leftover cash in hand — give to the bank or add to float`
+            : `Short $${Math.abs(net).toLocaleString()} — dealer tops up from float / pocket`;
+
+        panel.style.display = 'block';
+        panel.innerHTML = `
+          <div style="margin:0 16px 12px; padding:12px 14px; background:var(--bg-secondary); border:1px solid var(--accent-warning)44; border-radius:12px;">
+            <div style="font-size:13px; font-weight:800; letter-spacing:0.3px; margin-bottom:8px;">💵 Cash on table</div>
+            <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:4px;">
+              <span style="color:var(--text-secondary);">Collected from losers${potExisting > 0 ? ' (+ in-game pot)' : ''}</span>
+              <span style="font-weight:700; color:var(--accent-success);">+$${(cashIn + Math.max(potExisting, 0)).toLocaleString()}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:8px;">
+              <span style="color:var(--text-secondary);">Paid to cash winners</span>
+              <span style="font-weight:700; color:var(--accent-danger);">−$${cashOut.toLocaleString()}</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; font-size:14px; padding-top:8px; border-top:1px solid var(--border-color);">
+              <span style="font-weight:700;">Net cash in hand</span>
+              <span style="font-weight:800; color:${netColor};">${net < 0 ? '−' : ''}$${Math.abs(net).toLocaleString()}</span>
+            </div>
+            <div style="font-size:11px; color:${netColor}; margin-top:6px;">${netHint}</div>
+            ${payers.length ? `<div style="font-size:11px; color:var(--text-secondary); margin-top:8px;">In: ${payers.join(' · ')}</div>` : ''}
+            ${receivers.length ? `<div style="font-size:11px; color:var(--text-secondary); margin-top:2px;">Out: ${receivers.join(' · ')}</div>` : ''}
+          </div>`;
+      },
+
       updateSettlementProjection() {
         if (!app.settlementData) return;
+        this._updateCashPotPanel();
         const { positions, floatCash, floatUsdt } = app.settlementData;
 
         // Derrick's P/L always goes to float
@@ -11206,7 +11298,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v54';
+    const APP_VERSION = 'v55';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
