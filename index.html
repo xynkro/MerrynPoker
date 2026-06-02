@@ -11206,7 +11206,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v53';
+    const APP_VERSION = 'v54';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
@@ -11381,7 +11381,27 @@
         if (e.key !== 'Escape' || typeof app === 'undefined') return;
         const m = document.getElementById('modal');
         const sheet = document.getElementById('modalBackdrop');
-        if (m && m.classList.contains('show')) { app.closeModal && app.closeModal(); }
+        const modalOpen = m && m.classList.contains('show');
+
+        // Esc inside a focused field in the open modal must NOT close the whole
+        // modal — on Safari/macOS, Esc is the native "clear this search box" key,
+        // so closing here would silently destroy every buy-in the dealer just
+        // typed. Instead: clear that field (and re-filter if it's the player
+        // search), and keep the modal open. Only an Esc that ISN'T editing a
+        // filled field falls through to closing the modal.
+        const t = e.target;
+        const isField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA');
+        if (modalOpen && isField && m.contains(t) && t.value) {
+          e.preventDefault();
+          e.stopPropagation();
+          t.value = '';
+          if (t.id === 'addPlayerSearch' && typeof app._filterAddPlayerList === 'function') {
+            app._filterAddPlayerList('');
+          }
+          return; // keep modal open
+        }
+
+        if (modalOpen) { app.closeModal && app.closeModal(); }
         else if (sheet && sheet.classList.contains('show')) { app.closeActionSheet && app.closeActionSheet(); }
       });
     })();
