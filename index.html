@@ -2253,7 +2253,16 @@
               8000, 'probe'
             );
             const cloudHasPlayers = probeSnap.exists() && probeSnap.numChildren() > 0;
-            if (cloudHasPlayers) {
+            if (cloudHasPlayers && (typeof app !== 'undefined' && app._justSeeded)) {
+              // Cloud is authoritative AND our local data is just the fresh
+              // starter seed we laid down THIS run (local was empty). Pushing it
+              // up would duplicate the entire roster + float in the cloud. So
+              // discard the local seed and let the listeners repopulate from
+              // cloud. (Safe: _justSeeded ⟺ local was empty ⟺ no real offline
+              // data to preserve, so BE-5 doesn't apply here.)
+              console.log('[cloud] Cloud has data and we only have a fresh seed — discarding local seed, pulling from cloud.');
+              await this._wipeLocal();
+            } else if (cloudHasPlayers) {
               // Cloud is authoritative, BUT this device may hold sessions it
               // recorded offline before it ever synced. Wiping blindly would
               // lose them (BE-5). Instead, push any LOCAL-ONLY records (ids not
@@ -2265,6 +2274,9 @@
               console.log('[cloud] Cloud is empty — seeding from local IndexedDB.');
               await this._withTimeout(this._bootstrapPushLocal(), 30000, 'bootstrap');
             }
+            // Seed reconciled (either discarded for cloud, or pushed as the
+            // legit first seed) — clear the guard so normal self-heal can resume.
+            if (typeof app !== 'undefined') app._justSeeded = false;
             localStorage.setItem(FLAG, '1');
           } catch(e) {
             console.warn('[cloud] first-time setup failed; will retry next load:', e);
@@ -2352,6 +2364,13 @@
       // the subscription's last-writer-wins resolves those. Nothing is deleted.
       async _mergeLocalOnlyUp() {
         if (!this._fb) return 0;
+        // Never push a fresh, un-reconciled starter seed up — that's the bug
+        // that duplicated the whole roster + float in the cloud. _justSeeded is
+        // cleared only after bootstrap decides authority (wipe vs seed-up).
+        if (typeof app !== 'undefined' && app._justSeeded) {
+          console.log('[cloud] merge-up skipped — local is an un-reconciled fresh seed.');
+          return 0;
+        }
         const updates = {};
         let pushed = 0;
         for (const store of this.STORES) {
@@ -2924,6 +2943,12 @@
       async migrateData() {
         const players = await db.getAll('players');
         if (players.length === 0) {
+          // Local DB is empty → lay down the starter seed so the app renders
+          // before cloud connects. Flag it (in-memory, this run only): if the
+          // cloud turns out to already HAVE data, this fresh seed must be
+          // discarded — NOT pushed up — or it duplicates the entire roster +
+          // float in the cloud (the 241K / 2-of-everyone incident).
+          this._justSeeded = true;
           await this.seedPlayers();
           await this.seedCarries();
           await this.seedFloat();
@@ -11307,7 +11332,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v59';
+    const APP_VERSION = 'v60';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
