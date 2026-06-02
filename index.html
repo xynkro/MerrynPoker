@@ -1682,6 +1682,8 @@
             <button class="btn btn-secondary" onclick="app.showDerrickAdvanceModal()" style="flex: 1; font-size: 13px; background: var(--accent-primary)22; color: var(--accent-primary); border: 1px solid var(--accent-primary)44;">🏦 Derrick Advance</button>
           </div>
 
+          <button class="btn btn-secondary btn-block mb-12" onclick="app.parkAllRemaining()" style="font-size:13px;">📋 Park everyone remaining as Carry</button>
+
           <button class="btn btn-success btn-block mb-16" id="commitSettlementBtn">Commit Settlement</button>
         </div>
       </div>
@@ -4140,12 +4142,18 @@
 
         // End Session + Delete — above the tabs so they're always visible
         if (isActive && this.isDealer()) {
+          // Surface how many players still hold chips so cashing everyone out
+          // isn't forgotten until the commit-time confirm.
+          const _stillIn = entries.filter(e => {
+            const r = playerMap[e.player_id]?.role;
+            return r !== 'dealer' && (e.cash_out === null || e.cash_out === undefined);
+          }).length;
           html += `
             <div style="display: flex; gap: 8px; padding: 4px 16px 10px;">
               <button onclick="app.endSession()" style="
                 flex: 1; padding: 11px 8px; border-radius: 10px; font-size: 13px; font-weight: 700;
                 background: var(--accent-danger)18; border: 1px solid var(--accent-danger)44; color: var(--accent-danger);
-                cursor: pointer; touch-action: manipulation;">🔴 End Session</button>
+                cursor: pointer; touch-action: manipulation;">🔴 End Session${_stillIn > 0 ? ` · ${_stillIn} still in` : ''}</button>
               ${this.isOwner() ? `<button onclick="app.deleteSession('${session.id}')" style="
                 padding: 11px 14px; border-radius: 10px; font-size: 16px;
                 background: transparent; border: 1px solid var(--border-color); color: var(--text-secondary);
@@ -7200,6 +7208,21 @@
           </div>`;
       },
 
+      // One-tap: park every regular player's remaining balance as a Carry
+      // (the common end-of-night case where nobody's paid yet). Leaves Derrick
+      // (float) and anyone still in-play / already handled alone.
+      parkAllRemaining() {
+        if (!app.settlementData) return;
+        let n = 0;
+        for (const pos of app.settlementData.positions) {
+          if (pos.player?.role !== 'player') continue; // skip dealer + Derrick(bank)
+          if (pos.inPlay || pos.handled || !pos.remaining) continue;
+          this.setSettlementMethod(pos.id, 'park');
+          n++;
+        }
+        this.showToast(n ? `Parked ${n} player${n === 1 ? '' : 's'} as carries` : 'Nothing to park');
+      },
+
       updateSettlementProjection() {
         if (!app.settlementData) return;
         this._updateCashPotPanel();
@@ -7494,11 +7517,43 @@
         this.autoSync();
 
         this.showToast('Settlement committed');
+        // Snapshot for the receipt BEFORE clearing the session.
+        const _receipt = { date: session.date, positions: (positions || []).map(p => ({ name: p.player?.name, role: p.player?.role, net: p.net_pl || 0, method: p.settlement_method, remaining: p.remaining })) };
         this.currentSession = null;
         this.showScreen('dashboardScreen');
+        this._showSettlementReceipt(_receipt);
         } finally {
           this._committing = false;
         }
+      },
+
+      // Post-commit summary the dealer can read out / screenshot: each player's
+      // net + how they settled, and the house take.
+      _showSettlementReceipt(rec) {
+        if (!rec || !rec.positions) return;
+        const methodLabel = (m) => ({ park: '📋 Carry', cash: '💵 Cash', float_sgd: '🏦 Float', float_usdt: '🔶 Float USDT', allocated: '✓ in-game', fully_settled: '✓ outside' }[m] || '');
+        const players = rec.positions.filter(p => p.role !== 'dealer').sort((a, b) => b.net - a.net);
+        const dealer = rec.positions.find(p => p.role === 'dealer');
+        const rows = players.map(p => {
+          const pos = p.net > 0, neg = p.net < 0;
+          const col = pos ? 'var(--accent-success)' : neg ? 'var(--accent-danger)' : 'var(--text-secondary)';
+          return `<div style="display:flex; justify-content:space-between; align-items:baseline; padding:7px 0; border-bottom:1px solid var(--border-color);">
+            <span style="font-weight:600;">${this._esc(p.name || '?')}</span>
+            <span style="text-align:right;"><span style="font-weight:800; color:${col};">${pos ? '+' : neg ? '−' : ''}$${Math.abs(p.net).toLocaleString()}</span>
+            <span style="font-size:11px; color:var(--text-secondary); margin-left:6px;">${methodLabel(p.method)}</span></span>
+          </div>`;
+        }).join('');
+        document.getElementById('modalTitle').textContent = `🧾 Settled — ${this._fmtDate(rec.date)}`;
+        document.getElementById('modalBody').innerHTML = `
+          <div style="margin-bottom:10px;">${rows || '<div style="color:var(--text-secondary); text-align:center;">No players</div>'}</div>
+          ${dealer ? `<div style="display:flex; justify-content:space-between; align-items:baseline; padding:10px 0 2px; border-top:2px solid var(--border-color);">
+            <span style="font-weight:700;">🃏 House take</span>
+            <span style="font-weight:800; color:${dealer.net >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)'};">${dealer.net >= 0 ? '+' : '−'}$${Math.abs(dealer.net).toLocaleString()} → Stash</span>
+          </div>` : ''}
+          <div style="font-size:11px; color:var(--text-secondary); margin-top:10px; text-align:center;">You can still edit this later in History → tap the session.</div>
+        `;
+        document.getElementById('modalFooter').innerHTML = `<button class="btn btn-primary btn-block" onclick="app.closeModal()">Done</button>`;
+        document.getElementById('modal').classList.add('show');
       },
 
       async renderHistoryScreen() {
@@ -11352,7 +11407,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v67';
+    const APP_VERSION = 'v68';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
