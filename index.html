@@ -1655,16 +1655,7 @@
             <div id="floatTarget" style="margin-top: 8px; font-size: 11px; color: var(--text-secondary);"></div>
           </div>
 
-          <div id="dealerStashCard" class="float-card" style="background: linear-gradient(135deg, #1a2a1a, #0f1f0f); border-color: var(--accent-success)44; margin-bottom: 16px; cursor: pointer;" onclick="app.showDealerStashLedger()">
-            <div class="float-label" style="color: var(--accent-success);">Dealer Stash</div>
-            <div class="float-values">
-              <div class="float-sgd">
-                <span id="dealerStashSgd">$0</span>
-                <span class="float-currency">SGD</span>
-              </div>
-            </div>
-            <div style="margin-top: 4px; font-size: 11px; color: var(--text-secondary);">Cash the Dealer is holding from past sessions</div>
-          </div>
+          <!-- Dealer Stash card removed from dashboard (still on the Float screen). -->
 
           <div class="section-title">Open Carries</div>
           <div class="carries-scroll" id="carriesScroll"></div>
@@ -1842,16 +1833,13 @@
             <div id="myProfileBody"></div>
           </div>
 
-          <!-- Manage Players: visible to dealer + owner. Lives outside the Admin owner-PIN gate so Sarah can use it. -->
-          <div class="settings-section" id="settingsPlayersSection" style="display:none;">
-            <div class="settings-section-title">Players</div>
-            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;">Add, rename, delete, reset PINs, toggle Restricted View.</div>
-            <button class="btn btn-secondary btn-block" onclick="app.showAdminPlayerList()">Manage Players</button>
-          </div>
-
+          <!-- Account: Logout always shown; Manage Players gated to dealer+ via applyAccessGates (id kept on the button). -->
           <div class="settings-section">
-            <div class="settings-section-title">Session</div>
-            <button class="btn btn-secondary btn-block" onclick="app.logout()">🔒 Logout / Switch User</button>
+            <div class="settings-section-title">Account</div>
+            <div style="display:flex; gap:8px;">
+              <button class="btn btn-secondary" onclick="app.logout()" style="flex:1; font-size:13px;">🔒 Logout / Switch</button>
+              <button class="btn btn-secondary" id="settingsPlayersSection" onclick="app.showAdminPlayerList()" style="flex:1; font-size:13px; display:none;">👥 Manage Players</button>
+            </div>
           </div>
 
           <!-- Admin gate — locked by default, owner PIN to unlock -->
@@ -1870,70 +1858,14 @@
 
             <div id="adminUnlocked" style="display: none;">
               <div class="settings-section">
-                <div class="settings-section-title">Access PINs</div>
-                <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">Owner PIN: 797997. Set the others below.</div>
-                <div class="form-group" style="margin-bottom: 10px;">
-                  <label class="form-label">Dealer PIN <span style="color: var(--text-secondary); font-size: 11px;">(can run sessions, can't see your take)</span></label>
-                  <div style="display: flex; gap: 8px;">
-                    <input type="password" class="form-input" id="dealerPinInput" value="${localStorage.getItem('mp_pin_dealer') || '696969'}" maxlength="6" inputmode="numeric" style="flex:1; letter-spacing: 4px; font-size: 20px; text-align: center;">
-                    <button class="btn btn-secondary" style="padding: 10px 14px;" onclick="app.savePinSetting('dealer')">Save</button>
-                  </div>
-                </div>
-                <div class="form-group">
-                  <label class="form-label">Player PIN <span style="color: var(--text-secondary); font-size: 11px;">(read-only, no session management)</span></label>
-                  <div style="display: flex; gap: 8px;">
-                    <input type="password" class="form-input" id="playerPinInput" value="${localStorage.getItem('mp_pin_player') || '000000'}" maxlength="6" inputmode="numeric" style="flex:1; letter-spacing: 4px; font-size: 20px; text-align: center;">
-                    <button class="btn btn-secondary" style="padding: 10px 14px;" onclick="app.savePinSetting('player')">Save</button>
-                  </div>
-                </div>
-              </div>
-
-              <div class="settings-section">
-                <div class="settings-section-title">Data</div>
-                <button class="btn btn-secondary btn-block mb-12" id="exportJsonBtn">Export JSON Backup</button>
-                <button class="btn btn-secondary btn-block mb-12" id="importJsonBtn">Import JSON</button>
-                <button class="btn btn-secondary btn-block mb-12" onclick="app.resyncToCloud()">⬆️ Push this device to cloud</button>
-                <div style="font-size: 12px; color: var(--text-secondary); text-align: center; margin-top:-6px; margin-bottom:12px;">
-                  Uploads any sessions/players on this device the cloud is missing. Use if a running session shows here but not on another device.
-                </div>
-                <button class="btn btn-danger btn-block" id="clearDataBtn">Clear All Data</button>
-              </div>
-
-              <div class="settings-section">
                 <div class="settings-section-title">App</div>
-                <button class="btn btn-secondary btn-block mb-12" id="forceUpdateBtn">🔄 Force Update (get latest version)</button>
-                <div style="font-size: 12px; color: var(--text-secondary); text-align: center;">
-                  Version <span id="appVersion">—</span> · tap above if the app looks out of date
+                <div style="display:flex; gap:8px;">
+                  <button class="btn btn-secondary" id="forceUpdateBtn" style="flex:1; font-size:13px;">🔄 Force Update</button>
+                  <button class="btn btn-secondary" onclick="app.resyncToCloud()" style="flex:1; font-size:13px;">⬆️ Push to cloud</button>
                 </div>
-              </div>
-
-              <div class="settings-section">
-                <div class="settings-section-title">Google Sheets Sync</div>
-                <div class="form-group">
-                  <label class="form-label">Google Sheet ID</label>
-                  <input type="text" class="form-input" id="googleSheetId" value="1VNARRkpb3E67Ggw23iiKG_XDsJFJBEjKq2OzbZwmHvA" style="font-size: 12px;">
+                <div style="font-size: 11px; color: var(--text-secondary); text-align: center; margin-top:6px;">
+                  Version <span id="appVersion">—</span> · Force Update = get latest. Push to cloud = upload sessions this device has that the cloud is missing.
                 </div>
-                <div class="form-group">
-                  <label class="form-label">Apps Script Web App URL</label>
-                  <input type="text" class="form-input" id="appsScriptUrl" style="font-size: 11px; word-break: break-all;" placeholder="https://script.google.com/macros/s/…/exec">
-                  <div style="display:flex; gap:8px; margin-top:6px;">
-                    <button class="btn btn-secondary" onclick="app.saveScriptUrl()" style="flex:1; font-size:12px; padding:8px;">💾 Save URL</button>
-                  </div>
-                  <div id="urlSaveStatus" style="font-size:11px; color:var(--accent-success); margin-top:4px; display:none;">✓ Saved</div>
-                </div>
-                <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-                  <button class="btn btn-primary" onclick="app.syncPush()" style="flex: 1;">⬆ Push to Sheet</button>
-                  <button class="btn btn-secondary" onclick="app.syncPull()" style="flex: 1;">⬇ Pull from Sheet</button>
-                </div>
-                <div id="syncStatus" style="padding: 8px 12px; border-radius: 8px; background: var(--surface); font-size: 12px; color: var(--text-secondary); text-align: center;">
-                  Not synced yet
-                </div>
-              </div>
-
-              <div class="settings-section">
-                <div class="settings-section-title">Deleted Records</div>
-                <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;">Restore soft-deleted carries (e.g. accidental deletions).</div>
-                <button class="btn btn-secondary btn-block" onclick="app.showDeletedCarries()">View Deleted Carries</button>
               </div>
 
               <div class="settings-section">
@@ -1976,6 +1908,63 @@
                 </div>
 
                 <button class="btn btn-secondary btn-block" onclick="app.resetUiPrefs()">Reset to Defaults</button>
+              </div>
+
+              <div class="settings-section">
+                <div class="settings-section-title">Access PINs</div>
+                <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">Owner PIN: 797997. Dealer can run sessions; Player is read-only.</div>
+                <div style="display:flex; gap:10px;">
+                  <div class="form-group" style="flex:1; margin-bottom:0;">
+                    <label class="form-label" style="font-size:12px;">Dealer PIN</label>
+                    <div style="display:flex; gap:6px;">
+                      <input type="password" class="form-input" id="dealerPinInput" maxlength="6" inputmode="numeric" style="flex:1; min-width:0; letter-spacing:2px; font-size:16px; text-align:center; padding:8px;">
+                      <button class="btn btn-secondary" style="padding:8px 10px; font-size:12px;" onclick="app.savePinSetting('dealer')">Save</button>
+                    </div>
+                  </div>
+                  <div class="form-group" style="flex:1; margin-bottom:0;">
+                    <label class="form-label" style="font-size:12px;">Player PIN</label>
+                    <div style="display:flex; gap:6px;">
+                      <input type="password" class="form-input" id="playerPinInput" maxlength="6" inputmode="numeric" style="flex:1; min-width:0; letter-spacing:2px; font-size:16px; text-align:center; padding:8px;">
+                      <button class="btn btn-secondary" style="padding:8px 10px; font-size:12px;" onclick="app.savePinSetting('player')">Save</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="settings-section">
+                <div class="settings-section-title">Data</div>
+                <button class="btn btn-secondary btn-block mb-12" id="exportJsonBtn">Export JSON Backup</button>
+                <button class="btn btn-secondary btn-block mb-12" id="importJsonBtn">Import JSON</button>
+                <button class="btn btn-danger btn-block" id="clearDataBtn">Clear All Data</button>
+              </div>
+
+              <div class="settings-section">
+                <div class="settings-section-title">Google Sheets Sync</div>
+                <div class="form-group">
+                  <label class="form-label">Google Sheet ID</label>
+                  <input type="text" class="form-input" id="googleSheetId" value="1VNARRkpb3E67Ggw23iiKG_XDsJFJBEjKq2OzbZwmHvA" style="font-size: 12px;">
+                </div>
+                <div class="form-group">
+                  <label class="form-label">Apps Script Web App URL</label>
+                  <input type="text" class="form-input" id="appsScriptUrl" style="font-size: 11px; word-break: break-all;" placeholder="https://script.google.com/macros/s/…/exec">
+                  <div style="display:flex; gap:8px; margin-top:6px;">
+                    <button class="btn btn-secondary" onclick="app.saveScriptUrl()" style="flex:1; font-size:12px; padding:8px;">💾 Save URL</button>
+                  </div>
+                  <div id="urlSaveStatus" style="font-size:11px; color:var(--accent-success); margin-top:4px; display:none;">✓ Saved</div>
+                </div>
+                <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                  <button class="btn btn-primary" onclick="app.syncPush()" style="flex: 1;">⬆ Push to Sheet</button>
+                  <button class="btn btn-secondary" onclick="app.syncPull()" style="flex: 1;">⬇ Pull from Sheet</button>
+                </div>
+                <div id="syncStatus" style="padding: 8px 12px; border-radius: 8px; background: var(--surface); font-size: 12px; color: var(--text-secondary); text-align: center;">
+                  Not synced yet
+                </div>
+              </div>
+
+              <div class="settings-section">
+                <div class="settings-section-title">Deleted Records</div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px;">Restore soft-deleted carries (e.g. accidental deletions).</div>
+                <button class="btn btn-secondary btn-block" onclick="app.showDeletedCarries()">View Deleted Carries</button>
               </div>
 
               <button class="btn btn-secondary btn-block" onclick="app.lockAdmin()" style="margin-top: 12px; color: var(--accent-danger); border-color: var(--accent-danger)44;">🔒 Lock Admin</button>
@@ -4233,7 +4222,10 @@
               <div class="player-card ${isCashedOut ? 'cashed-out' : ''}" data-entry-id="${entry.id}" onclick="app.showPlayerActionSheet_id('${entry.id}')" style="cursor: pointer; ${isCashedOut ? '' : 'border-color: var(--accent-warning)33;'}">
                 <div style="flex: 1; min-width: 0;">
                   <div class="player-name">${player?.name || '?'}${roleBadge}</div>
-                  <div style="font-size: 12px; color: var(--text-secondary);">${rebuyCount}x · $${totalBuyin.toLocaleString()}</div>
+                  <div style="margin-top:2px;">
+                    <span style="font-size: 20px; font-weight: 800; color: var(--text-primary);">$${totalBuyin.toLocaleString()}</span>
+                    <span style="font-size: 11px; color: var(--text-secondary); margin-left:6px;">${rebuyCount} buy-in${rebuyCount === 1 ? '' : 's'}</span>
+                  </div>
                 </div>
                 <div style="display: flex; align-items: center; gap: 8px; flex-shrink: 0;">
                   ${isCashedOut
@@ -8658,7 +8650,11 @@
         const dealerEntry   = entries.find(e => players.find(p => p.id === e.player_id)?.role === 'dealer');
         const totalBuyIn    = playerEntries.reduce((s, e) => s + (e.buy_ins || []).reduce((ss, b) => ss + b.amount, 0), 0);
         const totalCashOut  = playerEntries.reduce((s, e) => s + (e.cash_out || 0), 0);
-        const dealerTake    = dealerEntry?.cash_out != null ? dealerEntry.cash_out : (totalBuyIn - totalCashOut);
+        // House take is ALWAYS derived: total non-dealer buy-ins minus their
+        // cash-outs (zero-sum). Computing it live (rather than trusting the
+        // stored dealer entry) means editing a player's cash-out here immediately
+        // flows through — fixes the stale "dealer carrying $X" after an edit.
+        const dealerTake    = totalBuyIn - totalCashOut;
 
         // Update back button destination
         const backBtn = document.getElementById('sessionDetailBackBtn');
@@ -8814,17 +8810,16 @@
 
         if (dealerEntry) {
           const d = playerMap[dealerEntry.player_id];
+          const liveBI = playerEntries.reduce((s, e) => s + (e.buy_ins || []).reduce((ss, b) => ss + b.amount, 0), 0);
+          const liveCO = playerEntries.reduce((s, e) => s + (e.cash_out || 0), 0);
+          const liveTake = liveBI - liveCO;
           fieldsHtml += `
             <div style="margin-bottom: 14px; padding-top: 14px; border-top: 1px solid var(--border-color);">
-              <label style="font-size: 14px; font-weight: 600; color: var(--accent-success);">🃏 ${d?.name || 'Dealer'} — Cash-out</label>
-              <div style="display: flex; align-items: center; gap: 8px; margin-top: 6px;">
-                <input type="number" class="form-input" data-entry-id="${dealerEntry.id}" data-entry-type="cashout"
-                  value="${dealerEntry.cash_out != null ? dealerEntry.cash_out : ''}"
-                  placeholder="Leave blank = auto (buy-in minus cash-outs)"
-                  style="flex: 1; font-size: 16px; padding: 10px 14px;"
-                  inputmode="numeric">
+              <div style="display:flex; justify-content:space-between; align-items:baseline;">
+                <label style="font-size: 14px; font-weight: 600; color: var(--accent-success);">🃏 ${d?.name || 'Dealer'} — House take</label>
+                <span style="font-size:16px; font-weight:800; color:${liveTake >= 0 ? 'var(--accent-success)' : 'var(--accent-danger)'};">${liveTake >= 0 ? '+' : ''}$${liveTake.toLocaleString()}</span>
               </div>
-              <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">Leave blank to auto-calculate from player buy-ins vs cash-outs</div>
+              <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">Auto-calculated from player buy-ins − cash-outs. Updates when you save.</div>
             </div>
           `;
         }
@@ -8855,23 +8850,24 @@
           updates.push({ entryId, cashOut });
         }
 
+        const players = await db.getAll('players');
         for (const { entryId, cashOut } of updates) {
           const entry = await db.get('sessionEntries', entryId);
           if (!entry) continue;
-          const players = await db.getAll('players');
           const player  = players.find(p => p.id === entry.player_id);
+          // The dealer take is always derived from the players' numbers, so we
+          // skip any dealer field here and recompute it authoritatively below.
+          // (Editing a player's cash-out used to leave the dealer take stale.)
+          if (player?.role === 'dealer') continue;
           const totalBI = (entry.buy_ins || []).reduce((s, b) => s + b.amount, 0);
-
           entry.cash_out = cashOut;
-          if (player?.role !== 'dealer') {
-            entry.net_pl = cashOut != null ? cashOut - totalBI : null;
-          } else {
-            // For dealer, net_pl = cash_out (it IS the take)
-            entry.net_pl = cashOut;
-          }
+          entry.net_pl = cashOut != null ? cashOut - totalBI : null;
           entry.updated_at = new Date().toISOString();
           await db.put('sessionEntries', entry);
         }
+
+        // Re-finalise the house take = Σ player buy-ins − Σ player cash-outs.
+        await this._recomputeDealerEntry(sessionId);
 
         this.closeModal();
         this.showToast('Settlement updated');
@@ -11298,7 +11294,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v55';
+    const APP_VERSION = 'v56';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
