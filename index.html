@@ -4589,6 +4589,13 @@
         const floatCash = allFloatTx.reduce((s, tx) => s + (tx.amount_sgd || 0), 0);
         const floatUsdt = allFloatTx.reduce((s, tx) => s + (tx.amount_usdt || 0), 0);
         const stashTotal = allDsTx.reduce((s, tx) => s + (tx.amount_sgd || 0), 0);
+        // Cash Pot: physical cash on the table this session. Losers who pay cash
+        // ADD to it (positive); winners who take cash DRAW from it (negative).
+        // It's a session-local pile the dealer redistributes — never touches the
+        // float or stash. Tracked as tablePayments rows with from_source 'cash_pot'.
+        const cashPot = tablePmts
+          .filter(tp => tp.from_source === 'cash_pot')
+          .reduce((s, tp) => s + (tp.amount || 0), 0);
         const liveRate = await this.fetchLiveRates().then(r => Number(r?.usdtSgd) || FALLBACK_USDT_SGD).catch(() => FALLBACK_USDT_SGD);
 
         // Compute counterparties — ONLY cashed-out players have realized P/L.
@@ -4627,7 +4634,7 @@
 
         // Stash state for live recompute
         app._coBuyin = totalBuyin;
-        app._coAlloc = { entryId, totalBuyin, rate: liveRate, counterparties, floatCash, floatUsdt, stashTotal };
+        app._coAlloc = { entryId, totalBuyin, rate: liveRate, counterparties, floatCash, floatUsdt, stashTotal, cashPot };
 
         this.closeActionSheet();
         const modal = document.getElementById('modal');
@@ -4739,8 +4746,19 @@
                   style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
               </div>
               <div data-src-row data-src-type="stash" data-cap="999999999" data-avail-sgd="${stashTotal}"
-                   style="display:flex; align-items:center; gap:8px; padding:7px 4px;">
+                   style="display:flex; align-items:center; gap:8px; padding:7px 4px; border-bottom:1px solid var(--border-color);">
                 <span style="flex:1; font-size:13px;">🃏 Dealer Stash <span style="font-size:11px; color:var(--text-secondary);">$${fmt(stashTotal)} avail</span></span>
+                <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
+                  oninput="app._coAllocFmt(this)" onclick="this.select()"
+                  style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
+              </div>
+              <!-- Cash on table (the session cash pot). For a WINNER the input draws
+                   FROM the pot (capped at the pot balance). For a LOSER it ADDS the
+                   cash they're handing in TO the pot. Direction handled in commit. -->
+              <div data-src-row data-src-type="cash_pot" data-cap="999999999" data-avail-sgd="${cashPot}"
+                   style="display:flex; align-items:center; gap:8px; padding:7px 4px;">
+                <span style="flex:1; font-size:13px;">💵 Cash on table
+                  <span id="coCashPotHint" style="font-size:11px; color:var(--text-secondary);">$${fmt(cashPot)} in pot</span></span>
                 <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
                   oninput="app._coAllocFmt(this)" onclick="this.select()"
                   style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
@@ -4848,6 +4866,20 @@
         document.querySelectorAll('[data-src-row][data-avail-sgd]').forEach(row => {
           const avail = parseFloat(row.dataset.availSgd) || 0;
           const typed = this._coReadAllocAmt(row.querySelector('input.alloc-src'));
+          // Cash on table is special: for a LOSER it's money going INTO the pot
+          // (no availability limit — they can always hand in cash), so never dim
+          // and relabel the hint. For a WINNER it draws from the pot like a normal
+          // limited source.
+          if (row.dataset.srcType === 'cash_pot') {
+            const hint = document.getElementById('coCashPotHint');
+            if (direction === 'loser') {
+              if (hint) hint.textContent = 'adds to pot';
+              row.classList.remove('co-low-avail');
+              return;
+            } else if (hint) {
+              hint.textContent = `$${Math.round(avail).toLocaleString()} in pot`;
+            }
+          }
           let isLow = false;
           if (typed > 0) {
             isLow = false; // user is engaging this source — keep it full opacity
@@ -5215,6 +5247,23 @@
               updated_at: now,
               deleted_at: null,
             });
+          } else if (type === 'cash_pot') {
+            // Session cash pot: winner DRAWS cash out of the pot (-amt); loser
+            // ADDS the physical cash they hand in (+amt). Never touches float/stash.
+            await db.put('tablePayments', {
+              id: crypto.randomUUID(),
+              session_id: session.id,
+              origin_entry_id: entryId,
+              timestamp: now,
+              type: 'TABLE_PAYMENT',
+              from_source: 'cash_pot',
+              from_player_id: isWin ? null : winnerId,   // loser is the one putting cash in
+              to_player_id: isWin ? winnerId : null,      // winner is the one taking cash out
+              amount: isWin ? -amt : amt,                 // sign: + adds to pot, - draws from pot
+              note: isWin ? `Cash on table — paid $${amt.toLocaleString()} to ${playerName}` : `Cash on table — ${playerName} put in $${amt.toLocaleString()}`,
+              updated_at: now,
+              deleted_at: null,
+            });
           }
         }
 
@@ -5223,11 +5272,14 @@
         // winner who already recorded "Paid by Darren $X" before Darren cashed
         // out doesn't end up double-counting.
         const settle = Math.abs(netPl);
+        // Exclude cash_pot rows here — the pot draw/add for THIS cashout is
+        // already counted in totalAllocated, so counting it again as an
+        // "existing payment" would double-offset the remainder.
         const existingPmtsFromMe = (await db.getAll('tablePayments'))
           .filter(tp => tp.session_id === session.id && tp.from_player_id === winnerId && tp.from_source === 'player' && !tp.deleted_at)
           .reduce((s, tp) => s + tp.amount, 0);
         const existingPmtsToMe = (await db.getAll('tablePayments'))
-          .filter(tp => tp.session_id === session.id && tp.to_player_id === winnerId && !tp.deleted_at)
+          .filter(tp => tp.session_id === session.id && tp.to_player_id === winnerId && tp.from_source !== 'cash_pot' && !tp.deleted_at)
           .reduce((s, tp) => s + tp.amount, 0);
         const alreadyOffset = isWin ? existingPmtsToMe : existingPmtsFromMe;
         const remainder = Math.max(0, settle - totalAllocated - alreadyOffset);
@@ -11091,7 +11143,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v50';
+    const APP_VERSION = 'v51';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
