@@ -7060,7 +7060,7 @@
                   <div class="settlement-value ${pos.net_position > 0 ? 'positive' : 'negative'}">${pos.net_position > 0 ? '+' : ''}$${Math.abs(pos.net_position).toLocaleString()}</div>
                 </div>
               </div>
-              <div style="font-size: 12px; color: var(--text-secondary);">Goes to Derrick's float</div>
+              <div style="font-size: 12px; color: var(--text-secondary);">Session P/L → float · carries stay open</div>
             `;
           } else {
             row.innerHTML = `
@@ -7291,9 +7291,10 @@
         this._updateCashPotPanel();
         const { positions, floatCash, floatUsdt } = app.settlementData;
 
-        // Derrick's P/L always goes to float
+        // Only Derrick's SESSION P/L hits the float (carries stay separate),
+        // matching commitSettlement.
         const derrick = positions.find(p => p.player?.role === 'bank');
-        let cashDelta = derrick ? derrick.net_position : 0;
+        let cashDelta = derrick ? (derrick.net_pl || 0) : 0;
         let usdtDelta = 0;
 
         for (const pos of positions) {
@@ -7442,6 +7443,11 @@
         const tonightEntryIds = new Set(positions.map(p => p.id));
         for (const carry of carries) {
           if (carry.origin_entry_id && tonightEntryIds.has(carry.origin_entry_id)) continue;
+          // NEVER fold the BANK's (Derrick's) own carries into a session. His float
+          // takes only his session P/L; his carries are separate obligations that
+          // stay open and settle via the Carries tab. (Folding them dumped his
+          // owed-balances into the float as phantom cash.)
+          if (derrick && carry.player_id === derrick.player_id) continue;
           if (positions.some(p => p.player_id === carry.player_id)) {
             carry.status = 'cleared';
             carry.cleared_at = settledNow;
@@ -7470,19 +7476,22 @@
         }
 
         // ── Derrick's Float ──
-        // If Derrick played this session, his P/L goes to his float.
-        if (derrick && derrick.net_position !== 0) {
-          const type = derrick.net_position > 0 ? 'BANK_WIN' : 'BANK_LOSS';
+        // Only his SESSION P/L (net_pl) goes to the float — NOT net_position,
+        // which also includes his open carries. Folding carries in dumped money
+        // he's merely *owed* into the float as if it were cash on hand.
+        const derrickSession = derrick ? (derrick.net_pl || 0) : 0;
+        if (derrick && derrickSession !== 0) {
+          const type = derrickSession > 0 ? 'BANK_WIN' : 'BANK_LOSS';
           await db.put('floatTransactions', {
             id: crypto.randomUUID(),
             session_id: session.id,
             timestamp: new Date().toISOString(),
             type,
-            amount_sgd: derrick.net_position,
+            amount_sgd: derrickSession,
             amount_usdt: 0,
             rate_used: null,
             player_id: derrick.player_id,
-            note: `Derrick ${type === 'BANK_WIN' ? 'won' : 'lost'} $${Math.abs(derrick.net_position).toLocaleString()}`,
+            note: `Derrick session ${type === 'BANK_WIN' ? 'win' : 'loss'} $${Math.abs(derrickSession).toLocaleString()}`,
             updated_at: new Date().toISOString(),
             deleted_at: null,
           });
@@ -11294,7 +11303,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v56';
+    const APP_VERSION = 'v57';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
