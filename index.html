@@ -7009,7 +7009,12 @@
           const playerCarries = carries
             .filter(c => c.player_id === entry.player_id && c.status === 'open' && c.origin_entry_id !== entry.id)
             .reduce((sum, c) => sum + c.amount_sgd, 0);
-          const netPosition = entry.net_pl + playerCarries;
+          const _role = players.find(p => p.id === entry.player_id)?.role;
+          const _isBank = _role === 'bank';
+          // Derrick (bank) settles his SESSION result only; his prior carries
+          // stay open and separate (handled via the Carries tab). Everyone else
+          // nets their prior carries into tonight's settlement.
+          const netPosition = entry.net_pl + (_isBank ? 0 : playerCarries);
 
           // Table payment adjustment:
           // If player is a winner (net > 0): already_received reduces remaining
@@ -7022,13 +7027,14 @@
           // A non-dealer who never cashed out is still IN PLAY — their result
           // is unknown, so net_pl reads 0 and remaining reads 0, which would
           // otherwise render a misleading "✓ Fully settled". Flag it instead.
-          const role = players.find(p => p.id === entry.player_id)?.role;
-          const inPlay = role !== 'dealer' && role !== 'bank' && (entry.cash_out === null || entry.cash_out === undefined);
+          const role = _role;
+          // Derrick (bank) is now cashed out like a normal player at session end.
+          const inPlay = role !== 'dealer' && (entry.cash_out === null || entry.cash_out === undefined);
 
           return {
             ...entry,
             player: players.find(p => p.id === entry.player_id),
-            prior_carry: playerCarries,
+            prior_carry: _isBank ? 0 : playerCarries,
             net_position: netPosition,
             already_settled: alreadySettled,
             remaining,
@@ -7069,26 +7075,15 @@
               </div>
               <div style="font-size: 12px; color: var(--accent-success);">→ Dealer Stash</div>
             `;
-          } else if (isBank) {
-            row.innerHTML = `
-              <div class="settlement-row-name">${pos.player?.name}${badge}</div>
-              <div class="settlement-row-values">
-                <div>
-                  <div class="settlement-value-label">Session</div>
-                  <div class="settlement-value ${pos.net_pl > 0 ? 'positive' : pos.net_pl < 0 ? 'negative' : ''}">${pos.net_pl > 0 ? '+' : pos.net_pl < 0 ? '-' : ''}$${Math.abs(pos.net_pl).toLocaleString()}</div>
-                </div>
-                <div>
-                  <div class="settlement-value-label">Carry</div>
-                  <div class="settlement-value ${pos.prior_carry > 0 ? 'positive' : pos.prior_carry < 0 ? 'negative' : ''}">${pos.prior_carry > 0 ? '+' : pos.prior_carry < 0 ? '-' : ''}$${Math.abs(pos.prior_carry).toLocaleString()}</div>
-                </div>
-                <div>
-                  <div class="settlement-value-label">Position</div>
-                  <div class="settlement-value ${pos.net_position > 0 ? 'positive' : 'negative'}">${pos.net_position > 0 ? '+' : ''}$${Math.abs(pos.net_position).toLocaleString()}</div>
-                </div>
-              </div>
-              <div style="font-size: 12px; color: var(--text-secondary);">Session P/L → float · carries stay open</div>
-            `;
           } else {
+            // Regular players AND Derrick (bank) render the same way: cash-out
+            // field if still in play, then settle buttons. The only difference
+            // for the bank is the Float direction (handled in commit/projection)
+            // and that Float is his default method.
+            const defM = isBank ? 'float_sgd' : 'park';
+            const curM = pos.settlement_method || defM;
+            if (isBank && !pos.settlement_method) pos.settlement_method = 'float_sgd';
+            const floatLabel = isBank ? (pos.net_pl >= 0 ? 'Into Float' : 'From Float') : 'Float SGD';
             row.innerHTML = `
               <div class="settlement-row-name">${pos.player?.name}${badge}</div>
               <div class="settlement-row-values" style="flex-wrap: wrap;">
@@ -7119,10 +7114,10 @@
                 </div>
               ` : (pos.remaining !== 0 ? `
                 <div class="settlement-toggle" style="margin-top: 12px; flex-wrap: wrap; gap: 6px;">
-                  <button class="btn btn-secondary active" data-pos-id="${pos.id}" data-method="park" onclick="app.setSettlementMethod('${pos.id}', 'park')">📋 Carry</button>
-                  <button class="btn btn-secondary" data-pos-id="${pos.id}" data-method="cash" onclick="app.setSettlementMethod('${pos.id}', 'cash')">Cash</button>
-                  <button class="btn btn-secondary" data-pos-id="${pos.id}" data-method="float_sgd" onclick="app.setSettlementMethod('${pos.id}', 'float_sgd')" style="font-size: 12px;">Float SGD</button>
-                  <button class="btn btn-secondary" data-pos-id="${pos.id}" data-method="float_usdt" onclick="app.setSettlementMethod('${pos.id}', 'float_usdt')" style="font-size: 12px;">Float USDT</button>
+                  <button class="btn btn-secondary ${curM==='park'?'active':''}" data-pos-id="${pos.id}" data-method="park" onclick="app.setSettlementMethod('${pos.id}', 'park')">📋 Carry</button>
+                  <button class="btn btn-secondary ${curM==='cash'?'active':''}" data-pos-id="${pos.id}" data-method="cash" onclick="app.setSettlementMethod('${pos.id}', 'cash')">Cash</button>
+                  <button class="btn btn-secondary ${curM==='float_sgd'?'active':''}" data-pos-id="${pos.id}" data-method="float_sgd" onclick="app.setSettlementMethod('${pos.id}', 'float_sgd')" style="font-size: 12px;">${floatLabel}</button>
+                  <button class="btn btn-secondary ${curM==='float_usdt'?'active':''}" data-pos-id="${pos.id}" data-method="float_usdt" onclick="app.setSettlementMethod('${pos.id}', 'float_usdt')" style="font-size: 12px;">Float USDT</button>
                 </div>
                 <div id="partialRow_${pos.id}" style="display:none; margin-top:8px; align-items:center; gap:8px; font-size:12px; color:var(--text-secondary);">
                   <span>Settle now:</span>
@@ -7270,7 +7265,7 @@
         let cashIn = 0, cashOut = 0;
         const payers = [], receivers = [];
         for (const pos of positions) {
-          if (pos.player?.role === 'bank' || pos.player?.role === 'dealer') continue;
+          if (pos.player?.role === 'dealer') continue;
           if (pos.settlement_method !== 'cash') continue;
           const amt = pos.remaining !== undefined ? pos.remaining : pos.net_position;
           if (!amt) continue;
@@ -7317,40 +7312,32 @@
         this._updateCashPotPanel();
         const { positions, floatCash, floatUsdt } = app.settlementData;
 
-        // Only Derrick's SESSION P/L hits the float (carries stay separate),
-        // matching commitSettlement.
-        const derrick = positions.find(p => p.player?.role === 'bank');
-        let cashDelta = derrick ? (derrick.net_pl || 0) : 0;
+        // Float impact comes only from settle methods chosen below — Derrick
+        // (bank) now flows through the same loop, with owner-side direction.
+        let cashDelta = 0;
         let usdtDelta = 0;
 
         for (const pos of positions) {
-          if (pos.player?.role === 'bank' || pos.player?.role === 'dealer') continue;
+          if (pos.player?.role === 'dealer') continue;
           if (pos.settlement_method === 'allocated' || pos.settlement_method === 'fully_settled') continue;
+          const isBankPos = pos.player?.role === 'bank';
           const amt = pos.remaining !== undefined ? pos.remaining : pos.net_position;
           if (amt === 0) continue;
-          const method = pos.settlement_method || 'park';
+          const method = pos.settlement_method || (isBankPos ? 'float_sgd' : 'park');
           // Only the partial amount touches the float; the rest parks (UC-4).
           const settleMag = (method !== 'park' && pos.settle_partial && pos.settle_partial > 0 && pos.settle_partial < Math.abs(amt))
             ? pos.settle_partial : Math.abs(amt);
           const abs = settleMag;
+          // Float delta is owner-relative: normal player win pays FROM float (−);
+          // Derrick's win goes INTO float (+). dir = isBank ? +1 : −1 on the win.
+          const dir = isBankPos ? 1 : -1;
+          const signedFloat = (amt > 0 ? dir : -dir) * abs; // +ve into float
 
           if (method === 'float_sgd') {
-            if (amt > 0) {
-              cashDelta -= abs;  // Pay winner from float
-            } else {
-              cashDelta += abs;  // Loser pays into float
-            }
+            cashDelta += signedFloat;
           } else if (method === 'float_usdt') {
-            // Direct USDT payout (no SGD swap). USDT = SGD / rate.
             const rate = app.settlementData?.usdtRate || FALLBACK_USDT_SGD;
-            const usdt = abs / rate;
-            if (amt > 0) {
-              // Winner paid in USDT from float — float USDT goes down
-              usdtDelta -= usdt;
-            } else {
-              // Loser pays USDT to float — float USDT goes up
-              usdtDelta += usdt;
-            }
+            usdtDelta += signedFloat / rate;
           }
         }
 
@@ -7501,32 +7488,13 @@
           });
         }
 
-        // ── Derrick's Float ──
-        // Only his SESSION P/L (net_pl) goes to the float — NOT net_position,
-        // which also includes his open carries. Folding carries in dumped money
-        // he's merely *owed* into the float as if it were cash on hand.
-        const derrickSession = derrick ? (derrick.net_pl || 0) : 0;
-        if (derrick && derrickSession !== 0) {
-          const type = derrickSession > 0 ? 'BANK_WIN' : 'BANK_LOSS';
-          await db.put('floatTransactions', {
-            id: crypto.randomUUID(),
-            session_id: session.id,
-            timestamp: new Date().toISOString(),
-            type,
-            amount_sgd: derrickSession,
-            amount_usdt: 0,
-            rate_used: null,
-            player_id: derrick.player_id,
-            note: `Derrick session ${type === 'BANK_WIN' ? 'win' : 'loss'} $${Math.abs(derrickSession).toLocaleString()}`,
-            updated_at: new Date().toISOString(),
-            deleted_at: null,
-          });
-        }
-
-        // ── Player Settlements (peer-to-peer via Dealer) ──
-        // Use `remaining` (net_position minus table payments already made)
+        // ── Player Settlements (incl. Derrick, who now settles like a player) ──
+        // Use `remaining` (net_position minus table payments already made).
+        // Derrick (bank) goes through here too; his Float direction is owner-side
+        // (win → INTO float, loss → FROM float) — see the float branches below.
         for (const pos of positions) {
-          if (pos.player?.role === 'bank' || pos.player?.role === 'dealer') continue;
+          if (pos.player?.role === 'dealer') continue;
+          const isBankPos = pos.player?.role === 'bank';
           // Already settled in-session via the Cash Out allocator (or marked
           // settled outside the app) — its money already moved. Skip to avoid
           // double-paying (UC-1/BE-1).
@@ -7578,76 +7546,48 @@
               deleted_at: null,
             });
           } else if (method === 'float_sgd') {
-            // Settlement via Derrick's SGD cash float
+            // Float direction is OWNER-relative. Normal player: win → paid FROM
+            // float (−), loss → pays INTO float (+). Derrick (bank, the float's
+            // owner): win → his winnings go INTO float (+), loss → covered FROM
+            // float (−). So the float delta is (isBank ? amt : −amt).
             const absSgd = Math.abs(amt);
-            if (amt > 0) {
-              // Player WON → paid from Derrick's cash float (float goes down)
-              await db.put('floatTransactions', {
-                id: crypto.randomUUID(),
-                session_id: session.id,
-                timestamp: new Date().toISOString(),
-                type: 'SETTLEMENT_CASH_OUT',
-                amount_sgd: -absSgd,
-                amount_usdt: 0,
-                rate_used: null,
-                player_id: pos.player_id,
-                note: `Cash payout to ${pos.player?.name} from float ($${absSgd.toLocaleString()})`,
-                updated_at: new Date().toISOString(),
-                deleted_at: null,
-              });
-            } else {
-              // Player LOST → pays into Derrick's cash float (float goes up)
-              await db.put('floatTransactions', {
-                id: crypto.randomUUID(),
-                session_id: session.id,
-                timestamp: new Date().toISOString(),
-                type: 'SETTLEMENT_CASH_IN',
-                amount_sgd: absSgd,
-                amount_usdt: 0,
-                rate_used: null,
-                player_id: pos.player_id,
-                note: `Cash collected from ${pos.player?.name} into float ($${absSgd.toLocaleString()})`,
-                updated_at: new Date().toISOString(),
-                deleted_at: null,
-              });
-            }
+            const floatDelta = isBankPos ? amt : -amt;
+            const intoFloat = floatDelta > 0;
+            await db.put('floatTransactions', {
+              id: crypto.randomUUID(),
+              session_id: session.id,
+              timestamp: new Date().toISOString(),
+              type: intoFloat ? 'SETTLEMENT_CASH_IN' : 'SETTLEMENT_CASH_OUT',
+              amount_sgd: floatDelta,
+              amount_usdt: 0,
+              rate_used: null,
+              player_id: pos.player_id,
+              note: isBankPos
+                ? `${pos.player?.name} ${intoFloat ? 'win into' : 'loss from'} float ($${absSgd.toLocaleString()})`
+                : `${intoFloat ? 'Cash collected from' : 'Cash payout to'} ${pos.player?.name} ${intoFloat ? 'into' : 'from'} float ($${absSgd.toLocaleString()})`,
+              updated_at: new Date().toISOString(),
+              deleted_at: null,
+            });
           } else if (method === 'float_usdt') {
-            // Direct USDT payout — no SGD swap leg. Float USDT decreases (or
-            // increases for losers) by SGD/rate. Rate captured at commit time.
+            // Same owner-relative direction, in USDT. Rate captured at commit.
             const rate = app.settlementData?.usdtRate || FALLBACK_USDT_SGD;
             const absSgd = Math.abs(amt);
             const absUsdt = absSgd / rate;
-            if (amt > 0) {
-              // Player WON → paid in USDT from Derrick's float (USDT goes down).
-              await db.put('floatTransactions', {
-                id: crypto.randomUUID(),
-                session_id: session.id,
-                timestamp: new Date().toISOString(),
-                type: 'USDT_PAYOUT',
-                amount_sgd: 0,
-                amount_usdt: -absUsdt,
-                rate_used: rate,
-                player_id: pos.player_id,
-                note: `USDT payout to ${pos.player?.name}: ${absUsdt.toFixed(2)}T @ ${rate.toFixed(4)} = $${absSgd.toLocaleString()}`,
-                updated_at: new Date().toISOString(),
-                deleted_at: null,
-              });
-            } else {
-              // Player LOST → pays USDT into Derrick's float (USDT goes up).
-              await db.put('floatTransactions', {
-                id: crypto.randomUUID(),
-                session_id: session.id,
-                timestamp: new Date().toISOString(),
-                type: 'USDT_COLLECTION',
-                amount_sgd: 0,
-                amount_usdt: absUsdt,
-                rate_used: rate,
-                player_id: pos.player_id,
-                note: `USDT collected from ${pos.player?.name}: ${absUsdt.toFixed(2)}T @ ${rate.toFixed(4)} = $${absSgd.toLocaleString()}`,
-                updated_at: new Date().toISOString(),
-                deleted_at: null,
-              });
-            }
+            const usdtDelta = (isBankPos ? amt : -amt) / rate; // +ve = into float
+            const intoFloat = usdtDelta > 0;
+            await db.put('floatTransactions', {
+              id: crypto.randomUUID(),
+              session_id: session.id,
+              timestamp: new Date().toISOString(),
+              type: intoFloat ? 'USDT_COLLECTION' : 'USDT_PAYOUT',
+              amount_sgd: 0,
+              amount_usdt: usdtDelta,
+              rate_used: rate,
+              player_id: pos.player_id,
+              note: `${pos.player?.name} ${intoFloat ? 'into' : 'from'} float: ${absUsdt.toFixed(2)}T @ ${rate.toFixed(4)} = $${absSgd.toLocaleString()}`,
+              updated_at: new Date().toISOString(),
+              deleted_at: null,
+            });
           }
           // Cash: no DB record — settle peer-to-peer on the spot
         }
@@ -11332,7 +11272,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v60';
+    const APP_VERSION = 'v61';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
