@@ -1750,6 +1750,7 @@
         </div>
         <div class="carries-content active" data-tab-content="open" id="carriesOpenContent">
           <div id="carriesRecommendations" style="padding: 0 0 8px 0;"></div>
+          <div id="carrySortBar" style="display:flex; gap:6px; align-items:center; padding:0 0 10px 0; flex-wrap:wrap;"></div>
           <div id="carriesOpenList"></div>
         </div>
         <div class="carries-content" data-tab-content="cleared" id="carriesClearedContent"></div>
@@ -9011,11 +9012,32 @@
         // Render open carries list
         const openList = document.getElementById('carriesOpenList');
         openList.innerHTML = '';
+        const _sortBar = document.getElementById('carrySortBar');
         if (openCarries.length === 0) {
+          if (_sortBar) _sortBar.innerHTML = '';
           openList.innerHTML = '<div class="empty-state"><div class="glyph">♣</div>No open carries — everyone\'s square.</div>';
         } else {
           const canDeleteCarry = this.isDealer();
-          openCarries.sort((a, b) => Math.abs(b.amount_sgd) - Math.abs(a.amount_sgd)).forEach(carry => {
+          // Sort control: by Value (signed $), Name (A–Z), or Date. Tapping the
+          // active key flips direction.
+          if (!app._carrySort) app._carrySort = { key: 'value', dir: 'desc' };
+          const _cs = app._carrySort;
+          const _pName = id => (players.find(p => p.id === id)?.name || '').toLowerCase();
+          const _cmp = {
+            value: (a, b) => a.amount_sgd - b.amount_sgd,
+            name:  (a, b) => _pName(a.player_id).localeCompare(_pName(b.player_id)),
+            date:  (a, b) => new Date(a.created_at || a.updated_at || 0) - new Date(b.created_at || b.updated_at || 0),
+          };
+          openCarries.sort((a, b) => { const r = (_cmp[_cs.key] || _cmp.value)(a, b); return _cs.dir === 'asc' ? r : -r; });
+          if (_sortBar) {
+            _sortBar.innerHTML = '<span style="font-size:11px; color:var(--text-secondary); margin-right:2px;">Sort</span>' +
+              [['value', 'Value'], ['name', 'Name'], ['date', 'Date']].map(([k, label]) => {
+                const active = _cs.key === k;
+                const arrow = active ? (_cs.dir === 'asc' ? ' ↑' : ' ↓') : '';
+                return `<button onclick="app.setCarrySort('${k}')" style="padding:6px 12px; border-radius:8px; font-size:12px; font-weight:700; cursor:pointer; touch-action:manipulation; border:1px solid ${active ? 'var(--accent-primary)' : 'var(--border-color)'}; background:${active ? 'var(--accent-primary)22' : 'var(--bg-tertiary)'}; color:${active ? 'var(--accent-primary)' : 'var(--text-secondary)'};">${label}${arrow}</button>`;
+              }).join('');
+          }
+          openCarries.forEach(carry => {
             const player = players.find(p => p.id === carry.player_id);
             // Prefer created_at — see dashboard renderer for rationale.
             const daysAgo = Math.floor((Date.now() - new Date(carry.created_at || carry.updated_at)) / (1000 * 60 * 60 * 24));
@@ -9149,6 +9171,19 @@
         const owed = carry.amount_sgd > 0;
         this.showToast(`${name} now ${owed ? 'owed' : 'owes'} $${Math.abs(carry.amount_sgd).toLocaleString()}${cpMsg}`);
         this.closeModal();
+        this.renderCarriesScreen();
+      },
+
+      // Carries sort control. Same key tapped again → flip direction; new key →
+      // sensible default (Name A–Z, Value/Date high-to-low).
+      setCarrySort(key) {
+        if (!app._carrySort) app._carrySort = { key: 'value', dir: 'desc' };
+        if (app._carrySort.key === key) {
+          app._carrySort.dir = app._carrySort.dir === 'asc' ? 'desc' : 'asc';
+        } else {
+          app._carrySort.key = key;
+          app._carrySort.dir = (key === 'name') ? 'asc' : 'desc';
+        }
         this.renderCarriesScreen();
       },
 
@@ -11272,7 +11307,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v58';
+    const APP_VERSION = 'v59';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
