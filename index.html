@@ -1888,6 +1888,10 @@
                 <div class="settings-section-title">Data</div>
                 <button class="btn btn-secondary btn-block mb-12" id="exportJsonBtn">Export JSON Backup</button>
                 <button class="btn btn-secondary btn-block mb-12" id="importJsonBtn">Import JSON</button>
+                <button class="btn btn-secondary btn-block mb-12" onclick="app.resyncToCloud()">⬆️ Push this device to cloud</button>
+                <div style="font-size: 12px; color: var(--text-secondary); text-align: center; margin-top:-6px; margin-bottom:12px;">
+                  Uploads any sessions/players on this device the cloud is missing. Use if a running session shows here but not on another device.
+                </div>
                 <button class="btn btn-danger btn-block" id="clearDataBtn">Clear All Data</button>
               </div>
 
@@ -2229,8 +2233,16 @@
           const wasConnected = this._connected;
           this._connected = snap.val() === true;
           this._updateBadge();
-          // On a fresh reconnect, flush any writes that failed while offline.
-          if (this._connected && !wasConnected) this._replayPendingMirrors();
+          // On a fresh reconnect, flush any writes that failed while offline,
+          // then re-push any LOCAL-ONLY records the cloud is missing (self-heal:
+          // a record removed from the cloud while this device was offline would
+          // otherwise be stranded here forever — never re-uploaded, invisible to
+          // other devices). Non-destructive; deleted rows are skipped.
+          if (this._connected && !wasConnected) {
+            this._replayPendingMirrors()
+              .then(() => this._mergeLocalOnlyUp())
+              .catch((e) => console.warn('[cloud] reconnect resync failed:', e));
+          }
         });
 
         // FIRST-TIME JOIN: decide who's authoritative.
@@ -2345,30 +2357,36 @@
       // ever syncing doesn't lose them. Records present in both are left alone —
       // the subscription's last-writer-wins resolves those. Nothing is deleted.
       async _mergeLocalOnlyUp() {
-        if (!this._fb) return;
+        if (!this._fb) return 0;
         const updates = {};
         let pushed = 0;
         for (const store of this.STORES) {
-          const all = await new Promise((resolve, reject) => {
-            const tx = db.instance.transaction([store], 'readonly');
-            const req = tx.objectStore(store).getAll();
-            req.onsuccess = () => resolve(req.result || []);
-            req.onerror = () => reject(req.error);
-          });
-          for (const record of all) {
+          // One read of the whole store's keys (cheap — listeners already cached it)
+          // instead of an existence round-trip per record.
+          const [localAll, cloudSnap] = await Promise.all([
+            new Promise((resolve, reject) => {
+              const tx = db.instance.transaction([store], 'readonly');
+              const req = tx.objectStore(store).getAll();
+              req.onsuccess = () => resolve(req.result || []);
+              req.onerror = () => reject(req.error);
+            }),
+            this._fb.ref(store).once('value'),
+          ]);
+          for (const record of localAll) {
             if (!record?.id) continue;
-            // Does the cloud already have this id? Cheap per-id existence check.
-            let exists = false;
-            try {
-              const snap = await this._fb.ref(`${store}/${record.id}`).once('value');
-              exists = snap.exists();
-            } catch(e) { exists = false; }
-            if (!exists) { updates[`${store}/${record.id}`] = record; pushed++; }
+            // Never re-upload a row we deleted locally — that would resurrect it.
+            // (Soft-deletes carry deleted_at; the cloud copy, if any, keeps it too.)
+            if (record.deleted_at) continue;
+            if (!cloudSnap.hasChild(record.id)) {
+              updates[`${store}/${record.id}`] = this._withServerTs(record);
+              pushed++;
+            }
           }
         }
-        if (pushed === 0) { console.log('[cloud] Merge: no local-only records to push.'); return; }
+        if (pushed === 0) { console.log('[cloud] Merge: no local-only records to push.'); return 0; }
         await this._fb.ref().update(updates);
         console.log(`[cloud] Merge complete — pushed ${pushed} local-only record(s) the cloud was missing.`);
+        return pushed;
       },
 
       // Called from db.put on every IndexedDB write. Fire-and-forget.
@@ -9759,6 +9777,27 @@
         this.showToast('Script URL saved');
       },
 
+      async resyncToCloud() {
+        if (typeof cloud === 'undefined' || !cloud._fb) {
+          this.showToast('Cloud not connected — open with internet and try again');
+          return;
+        }
+        if (!cloud._connected) {
+          this.showToast('Offline — connect to the internet, then try again');
+          return;
+        }
+        this.showToast('Pushing this device to cloud…');
+        try {
+          const pushed = await cloud._mergeLocalOnlyUp();
+          this.showToast(pushed > 0
+            ? `Pushed ${pushed} record${pushed === 1 ? '' : 's'} to cloud — other devices will see them now`
+            : 'Already in sync — nothing to push');
+        } catch (e) {
+          console.warn('[cloud] manual resync failed:', e);
+          this.showToast('Sync failed — check connection and retry');
+        }
+      },
+
       loadSyncConfig() {
         const sheetId   = localStorage.getItem('mp_sheetId')   || this._defaultSheetId;
         const scriptUrl = localStorage.getItem('mp_scriptUrl') || this._defaultScriptUrl;
@@ -11143,7 +11182,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v51';
+    const APP_VERSION = 'v52';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
