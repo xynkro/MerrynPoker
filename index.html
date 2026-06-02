@@ -838,39 +838,8 @@
       justify-content: flex-end;
     }
 
-    .numeric-keypad {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 12px;
-    }
-
-    .numeric-key {
-      padding: 16px;
-      background: var(--bg-tertiary);
-      border: 1px solid var(--border-color);
-      color: var(--text-primary);
-      border-radius: 16px;
-      cursor: pointer;
-      font-weight: 600;
-      font-size: 24px;
-      min-height: 64px;
-      min-width: 64px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      transition: all 0.2s;
-    }
-
-    .numeric-key:active {
-      background: var(--accent-primary);
-      transform: scale(0.95);
-    }
-
-    .numeric-key.empty {
-      background: transparent;
-      border: none;
-      cursor: default;
-    }
+    /* (.numeric-keypad / .numeric-key removed with the dead showNumericModal;
+       .numeric-display above is still used by the session header stats.) */
 
     /* Buttons */
     .btn {
@@ -3484,11 +3453,9 @@
         const carriesTab = document.querySelector('[data-screen="carriesScreen"]');
         if (carriesTab) carriesTab.style.display = this.isElevated() ? '' : 'none';
 
-        // Dashboard cards: Dealer Stash is dealer-only (private).
-        // Float section is visible to dealer+ and Derrick (since he's the bank).
-        const stashCard    = document.getElementById('dealerStashCard');
+        // Dashboard Float section is visible to dealer+ and Derrick (the bank).
+        // (Dealer Stash card was removed from the dashboard — it lives on the Float screen.)
         const floatSection = document.getElementById('floatSection');
-        if (stashCard)    stashCard.style.display    = this.isDealer() ? '' : 'none';
         if (floatSection) floatSection.style.display = this.isElevated() ? '' : 'none';
 
         // Settings internals — Manage Players + Admin gate: dealer+ only
@@ -5099,43 +5066,6 @@
         }
       },
 
-      _coPickMethod(btn) {
-        const isUncleared = btn.dataset.method === 'uncleared';
-        document.querySelectorAll('#modalBody [data-method]').forEach(b => {
-          // Reset to default look. Uncleared has its own dashed default.
-          if (b.dataset.method === 'uncleared') {
-            b.style.background = 'var(--bg-tertiary)';
-            b.style.borderStyle = 'dashed';
-            b.style.borderColor = 'rgba(255,217,61,0.33)';
-            b.style.color = 'var(--accent-warning)';
-          } else {
-            b.style.background = 'var(--bg-tertiary)';
-            b.style.borderStyle = 'solid';
-            b.style.borderColor = 'var(--border-color)';
-            b.style.color = 'var(--text-primary)';
-          }
-          delete b.dataset.selected;
-        });
-        // Mark this button selected BEFORE any _updateCoBalance call so the
-        // selector inside that helper finds the new method.
-        btn.dataset.selected = '1';
-        if (isUncleared) {
-          btn.style.background = 'rgba(255,217,61,0.18)';
-          btn.style.borderStyle = 'solid';
-          btn.style.borderColor = 'rgba(255,217,61,0.7)';
-          btn.style.color = 'var(--accent-warning)';
-          // Uncleared = nothing paid → reset paid to 0 so balance reflects the full carry
-          const paidEl = document.getElementById('coPaid');
-          if (paidEl) paidEl.value = '';
-          this._updateCoBalance();
-        } else {
-          btn.style.background = 'rgba(78,204,163,0.18)';
-          btn.style.borderColor = 'rgba(78,204,163,0.55)';
-          btn.style.color = 'var(--accent-success)';
-          this._updateCoBalance();
-        }
-      },
-
       // Commit a multi-source cashout. Reads source-row inputs (peer
       // tablePayments, float SGD/USDT, dealer stash) and writes appropriate
       // records. Direction (pay vs collect) follows net P/L sign.
@@ -6517,73 +6447,6 @@
         this.renderHistoryScreen();
       },
 
-      showNumericModal(title, onSubmit) {
-        const modal = document.getElementById('modal');
-        document.getElementById('modalTitle').textContent = title;
-
-        let value = 0;
-        let displayValue = '0';
-
-        const updateDisplay = () => {
-          const numDisplay = document.getElementById('numDisplay');
-          if (numDisplay) numDisplay.textContent = value > 0 ? `$${value.toLocaleString()}` : '$0';
-        };
-
-        const handleKey = (key) => {
-          if (key === 'backspace') {
-            value = Math.floor(value / 10);
-          } else if (key === 'clear') {
-            value = 0;
-          } else {
-            const digit = parseInt(key, 10);
-            if (!isNaN(digit)) {
-              value = value * 10 + digit;
-            }
-          }
-          updateDisplay();
-        };
-
-        document.getElementById('modalBody').innerHTML = `
-          <div class="numeric-display" id="numDisplay">$0</div>
-          <div class="numeric-keypad">
-            ${[1, 2, 3, 4, 5, 6, 7, 8, 9].map(i => `<button class="numeric-key" onclick="app.handleNumericKey(${i}, '${title}');">${i}</button>`).join('')}
-            <button class="numeric-key empty" style="cursor: default;"></button>
-            <button class="numeric-key" onclick="app.handleNumericKey(0, '${title}');">0</button>
-            <button class="numeric-key" onclick="app.handleNumericKey('backspace', '${title}');">⌫</button>
-          </div>
-        `;
-
-        document.getElementById('modalFooter').innerHTML = `
-          <button class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
-          <button class="btn btn-primary" onclick="app.confirmNumericInput(${onSubmit.toString()})">Confirm</button>
-        `;
-
-        modal.classList.add('show');
-
-        app.currentNumericValue = value;
-        app.currentNumericCallback = onSubmit;
-      },
-
-      handleNumericKey(key, title) {
-        const keyStr = typeof key === 'number' ? key.toString() : key;
-        if (keyStr === 'backspace') {
-          app.currentNumericValue = Math.floor(app.currentNumericValue / 10);
-        } else if (keyStr === 'clear') {
-          app.currentNumericValue = 0;
-        } else if (!isNaN(parseInt(keyStr))) {
-          app.currentNumericValue = app.currentNumericValue * 10 + parseInt(keyStr);
-        }
-        const numDisplay = document.getElementById('numDisplay');
-        if (numDisplay) numDisplay.textContent = app.currentNumericValue > 0 ? `$${app.currentNumericValue.toLocaleString()}` : '$0';
-      },
-
-      confirmNumericInput(callback) {
-        if (app.currentNumericCallback) {
-          app.currentNumericCallback(app.currentNumericValue);
-        }
-        this.closeModal();
-      },
-
       closeActionSheet() {
         document.getElementById('actionSheet').classList.remove('show');
         document.getElementById('modalBackdrop').classList.remove('show');
@@ -7185,19 +7048,6 @@
 
         app.updateSettlementProjection();
         app.renderPaymentRecommendations(positions, players);
-      },
-
-      // From the settlement screen's in-play warning: jump back to the session
-      // Cash Out tab and focus that player's row so the dealer can settle them
-      // before committing (closes the loop on the in-play-player gap).
-      async goCashOutPlayer(entryId) {
-        this.sessionTab = 'cashout';
-        await this.showScreen('sessionScreen');
-        await this.renderSessionScreen();
-        setTimeout(() => {
-          const inp = document.getElementById('co_' + entryId);
-          if (inp) { inp.scrollIntoView({ block: 'center', behavior: 'smooth' }); inp.focus(); }
-        }, 80);
       },
 
       setSettlementMethod(entryId, method) {
@@ -10696,17 +10546,12 @@
         const map = {
           SETTLEMENT_CASH_IN:  { icon: '📥', label: 'Cash In' },
           SETTLEMENT_CASH_OUT: { icon: '📤', label: 'Cash Out' },
-          USDT_TRANSFER:       { icon: '🔄', label: 'USDT Transfer' },
           USDT_PAYOUT:         { icon: '🔶', label: 'USDT Payout' },
           USDT_COLLECTION:     { icon: '🔷', label: 'USDT Collected' },
           USDT_SWAP_CASH_IN:   { icon: '📥', label: 'USDT Swap → Cash In' },
           USDT_SWAP_CASH_OUT:  { icon: '📤', label: 'USDT Swap → Cash Out' },
           CONVERT_CASH_TO_USDT:{ icon: '🔄', label: 'Cash → USDT' },
           CONVERT_USDT_TO_CASH:{ icon: '🔄', label: 'USDT → Cash' },
-          BANK_ABSORB:         { icon: '🏦', label: 'Derrick Session' },
-          BANK_WIN:            { icon: '📈', label: 'Derrick Won' },
-          BANK_LOSS:           { icon: '📉', label: 'Derrick Lost' },
-          DEALER_TIPS:         { icon: '🃏', label: 'Dealer Tips' },
           ADJUSTMENT:          { icon: '⚙️', label: 'Adjustment' },
           ADVANCE_OUT:         { icon: '🎅', label: 'Derrick Advance' },
           FLOAT_BORROW:        { icon: '↙️', label: 'Dealer Borrowed' },
@@ -11493,7 +11338,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v65';
+    const APP_VERSION = 'v66';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
