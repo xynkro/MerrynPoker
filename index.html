@@ -11004,10 +11004,11 @@
 
         const now = new Date().toISOString();
         let movedEntries=0, movedCarries=0, movedTps=0, removed=0;
-        const hardRemove = async (id) => {
-          await new Promise(r=>{ const tx=db.instance.transaction(['players'],'readwrite'); tx.objectStore('players').delete(id); tx.oncomplete=r; });
-          if (typeof cloud!=='undefined' && cloud._fb) { try { await cloud._fb.ref('players/'+id).remove(); } catch(e){} }
-        };
+        // SOFT-delete the loser (tombstone), NOT a hard remove. A hard remove
+        // gets resurrected: an offline device still holding the loser row sees it
+        // missing from the cloud and re-uploads it. A tombstone (deleted_at) stays
+        // in the cloud, so merge-up skips it and deletion-always-wins propagates.
+        const hardRemove = async (id) => { await db.softDelete('players', id); };
 
         for (const [name, group] of dupGroups) {
           // Keeper = most entries (prefer bank/dealer role record if tied on a special role).
@@ -11474,6 +11475,15 @@
             await db.softDelete(store, record.id);
           }
         }
+        // Reset the cloud-bootstrap + one-time-repair flags so the reload treats
+        // this as a first run: it will re-probe the cloud and DISCARD any fresh
+        // local seed if the cloud still has data (instead of leaving a duplicate
+        // roster locally that could later be pushed up). Closes the
+        // 'Clear data → reload → re-duplicate' hole.
+        try {
+          localStorage.removeItem('mp_firebase_bootstrapped_v1');
+          localStorage.removeItem('nicole_carry_restored_v1');
+        } catch (e) {}
         app.showToast('All data cleared');
         location.reload();
       }
@@ -11483,7 +11493,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v64';
+    const APP_VERSION = 'v65';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
