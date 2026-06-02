@@ -2878,7 +2878,29 @@
 
       // Called by cloud sync when an inbound remote change has been written to IndexedDB.
       // Re-renders whichever screen the user is currently looking at so they see the new data.
+      // Is a blocking overlay open? If so the user is mid-task (selecting
+      // players to add, editing a carry, entering a PIN…) and a background
+      // sync re-render would steal focus/scroll and wipe their in-progress
+      // input. We defer the refresh until they close it.
+      _blockingUiOpen() {
+        return ['modal', 'actionSheet', 'pinKeypadOverlay'].some((id) => {
+          const el = document.getElementById(id);
+          return el && el.classList.contains('show');
+        });
+      },
+
+      // Called when an overlay closes — run any refresh that was held back.
+      _flushDeferredRender() {
+        if (this._renderDeferred && !this._blockingUiOpen()) {
+          this._renderDeferred = false;
+          this.refreshActiveScreen();
+        }
+      },
+
       async refreshActiveScreen() {
+        // Don't stomp an in-progress flow (e.g. the Add Players modal). Hold the
+        // refresh and replay it once the overlay closes (_flushDeferredRender).
+        if (this._blockingUiOpen()) { this._renderDeferred = true; return; }
         const active = document.querySelector('.screen.active');
         if (!active) return;
         const renderers = {
@@ -6516,10 +6538,12 @@
       closeActionSheet() {
         document.getElementById('actionSheet').classList.remove('show');
         document.getElementById('modalBackdrop').classList.remove('show');
+        this._flushDeferredRender();
       },
 
       closeModal() {
         document.getElementById('modal').classList.remove('show');
+        this._flushDeferredRender();
       },
 
       showToast(message) {
@@ -11182,7 +11206,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v52';
+    const APP_VERSION = 'v53';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
