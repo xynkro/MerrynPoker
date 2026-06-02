@@ -9041,46 +9041,14 @@
             const slide = document.createElement('div');
             slide.style.cssText = 'position: relative; background: var(--bg-primary); transition: transform 0.2s ease; will-change: transform;';
             slide.innerHTML = `
-              <div class="carry-item" onclick="app.showCarryDetail(app._carryCache['${carry.id}'])" style="margin-bottom: 0; border-radius: 12px 12px 0 0;">
+              <div class="carry-item" onclick="app.showCarryDetail(app._carryCache['${carry.id}'])" style="margin-bottom: 0; border-radius: 12px; cursor: pointer;">
                 <div class="carry-item-left">
                   <div class="carry-item-name">${player?.name || 'Unknown'}${carry.counterparty_id ? ` <span style="font-size:11px; font-weight:600; color:var(--accent-brand); opacity:0.9;">⇄ ${this._esc(players.find(p=>p.id===carry.counterparty_id)?.name || '?')}</span>` : ''}</div>
-                  <div class="carry-item-meta">${daysAgo} days ago${carry.note ? ' · ' + this._esc(carry.note) : ''}</div>
+                  <div class="carry-item-meta">${daysAgo} days ago${carry.note ? ' · ' + this._esc(carry.note) : ''}<span style="opacity:0.55;"> · tap to settle</span></div>
                 </div>
                 <div class="carry-item-amount ${carry.amount_sgd > 0 ? 'positive' : 'negative'}">
                   ${carry.amount_sgd > 0 ? '+' : '-'}$${Math.abs(carry.amount_sgd).toLocaleString()}
                 </div>
-              </div>
-              <div id="carryActions_${carry.id}" style="display: flex; gap: 0; border-radius: 0 0 12px 12px; overflow: hidden; border: 1px solid var(--border-color); border-top: none;">
-                <button onclick="event.stopPropagation(); app.showCarryAllocator('${carry.id}')" title="Settle from multiple sources" aria-label="Multi-source split"
-                  style="flex: 1.4; padding: 9px 4px; background: var(--accent-primary)18; color: var(--accent-primary); border: none; font-size: 12px; font-weight: 700; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation; display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.1;">
-                  <span style="font-size:14px;">🤝</span>
-                  <span>Split</span>
-                </button>
-                <button onclick="event.stopPropagation(); app.clearCarry('${carry.id}', 'player')" title="Settle directly with this player" aria-label="Settle with player"
-                  style="flex: 1; padding: 9px 4px; background: var(--bg-tertiary); color: var(--text-primary); border: none; font-size: 11px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation; display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.1;">
-                  <span style="font-size:14px;">👤</span>
-                  <span>Player</span>
-                </button>
-                <button onclick="event.stopPropagation(); app.clearCarry('${carry.id}', 'dealer_stash')" title="Settle into / from Dealer Stash" aria-label="Settle via Dealer Stash"
-                  style="flex: 1; padding: 9px 4px; background: var(--bg-tertiary); color: var(--accent-success); border: none; font-size: 11px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation; display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.1;">
-                  <span style="font-size:14px;">🃏</span>
-                  <span>Stash</span>
-                </button>
-                <button onclick="event.stopPropagation(); app.clearCarry('${carry.id}', 'derrick_float')" title="Settle into / from Derrick's Float (Cash)" aria-label="Settle via Float Cash"
-                  style="flex: 1; padding: 9px 4px; background: var(--bg-tertiary); color: var(--accent-primary); border: none; font-size: 11px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation; display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.1;">
-                  <span style="font-size:14px;">🏦</span>
-                  <span>Cash</span>
-                </button>
-                <button onclick="event.stopPropagation(); app.clearCarry('${carry.id}', 'usdt')" title="Settle via USDT (uses live rate)" aria-label="Settle via USDT"
-                  style="flex: 1; padding: 9px 4px; background: var(--bg-tertiary); color: #f7931a; border: none; font-size: 11px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation; display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.1;">
-                  <span style="font-size:14px;">🔶</span>
-                  <span>USDT</span>
-                </button>
-                <button onclick="event.stopPropagation(); app.clearCarry('${carry.id}', 'external')" title="Already settled outside the app — just mark it cleared (no effect on float/stash/players)" aria-label="Mark settled outside the app"
-                  style="flex: 1; padding: 9px 4px; background: var(--bg-tertiary); color: var(--text-secondary); border: none; font-size: 11px; font-weight: 600; cursor: pointer; touch-action: manipulation; display:flex; flex-direction:column; align-items:center; gap:1px; line-height:1.1;">
-                  <span style="font-size:14px;">✅</span>
-                  <span>Done</span>
-                </button>
               </div>
             `;
             wrapper.appendChild(slide);
@@ -9237,7 +9205,8 @@
           document.getElementById('modalFooter').innerHTML = `
             <div style="display: flex; flex-direction: column; gap: 8px; width: 100%;">
               <button class="btn btn-primary btn-block" onclick="app.saveCarryEdit('${carry.id}')">💾 Save amount</button>
-              <div style="font-size: 12px; color: var(--text-secondary); text-align: center; margin-bottom: 2px;">Clear via:</div>
+              <button class="btn btn-block" onclick="app.closeModal(); app.showCarryAllocator('${carry.id}')" style="background: var(--accent-primary)18; color: var(--accent-primary); border: 1px solid var(--accent-primary)44;">🤝 Split across sources</button>
+              <div style="font-size: 12px; color: var(--text-secondary); text-align: center; margin-bottom: 2px;">Or clear via:</div>
               <div style="display: flex; gap: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--border-color);">
                 <button onclick="app.closeModal(); app.clearCarry('${carry.id}', 'player')" style="flex: 1; padding: 12px 4px; background: var(--bg-tertiary); color: var(--text-primary); border: none; font-size: 13px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation;">👤 Player</button>
                 <button onclick="app.closeModal(); app.clearCarry('${carry.id}', 'dealer_stash')" style="flex: 1; padding: 12px 4px; background: var(--bg-tertiary); color: var(--accent-success); border: none; font-size: 13px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation;">🃏 Stash</button>
@@ -11303,7 +11272,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v57';
+    const APP_VERSION = 'v58';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
