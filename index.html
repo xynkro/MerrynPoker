@@ -1792,6 +1792,17 @@
               <button class="btn btn-secondary" id="convertCashToUsdt" style="flex:1; padding:10px; font-size:13px;">Cash → USDT</button>
               <button class="btn btn-secondary" id="convertUsdtToCash" style="flex:1; padding:10px; font-size:13px;">USDT → Cash</button>
             </div>
+
+            <!-- ── Sarah's working capital: borrow from the float / return it / swap ── -->
+            <div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--border-color);">
+              <div style="font-size:11px; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px;">Dealer working capital</div>
+              <div id="sarahOwesFloat" style="display:none; padding:6px 10px; margin-bottom:8px; background:var(--accent-warning)18; border:1px solid var(--accent-warning)44; border-radius:8px; font-size:12px; color:var(--accent-warning); font-weight:700; text-align:center;"></div>
+              <div style="display:flex; gap:8px;">
+                <button class="btn btn-secondary" onclick="app.showFloatBorrowModal('borrow')" style="flex:1; padding:10px; font-size:13px;">↙ Borrow</button>
+                <button class="btn btn-secondary" onclick="app.showFloatBorrowModal('return')" style="flex:1; padding:10px; font-size:13px;">↩ Return</button>
+                <button class="btn btn-secondary" onclick="app.showFloatSwapModal()" style="flex:1; padding:10px; font-size:13px;">⇄ Swap</button>
+              </div>
+            </div>
           </div>
 
           <div class="filter-chips" id="filterChips"></div>
@@ -4203,6 +4214,7 @@
             topBtns.push(`<button class="btn btn-secondary" onclick="app.addPlayerToSession()" style="flex:1; font-size:13px; padding:11px;">+ Add Player</button>`);
           } else {
             topBtns.push(`<button class="btn btn-secondary" onclick="app.showTablePaymentModal()" style="flex:1; font-size:13px; padding:11px; background:var(--accent-warning)22; color:var(--accent-warning); border:1px solid var(--accent-warning)44;">💸 Transfer</button>`);
+            topBtns.push(`<button class="btn btn-secondary" onclick="app.showFloatBorrowModal('borrow')" title="Borrow cash/USDT from the float to pay someone now" style="flex:1; font-size:13px; padding:11px; background:var(--accent-success)18; color:var(--accent-success); border:1px solid var(--accent-success)44;">↙ Float</button>`);
             if (this.isOwner()) {
               topBtns.push(`<button class="btn btn-secondary" onclick="app.showDerrickAdvanceModal()" style="flex:1; font-size:13px; padding:11px; background:var(--accent-primary)22; color:var(--accent-primary); border:1px solid var(--accent-primary)44;">🏦 Advance</button>`);
             }
@@ -10112,6 +10124,25 @@
         }
         if (repayBtn) repayBtn.style.display = stashOwesFloat > 0 ? '' : 'none';
 
+        // Dealer (Sarah) working capital: how much she's borrowed from the float
+        // and not yet returned, per currency. FLOAT_BORROW = took out (float −),
+        // FLOAT_RETURN = put back (float +).
+        const live = transactions.filter(t => !t.deleted_at);
+        const borrowedSgd  = live.filter(t => t.type === 'FLOAT_BORROW').reduce((s, t) => s + Math.abs(t.amount_sgd || 0), 0);
+        const returnedSgd  = live.filter(t => t.type === 'FLOAT_RETURN').reduce((s, t) => s + Math.abs(t.amount_sgd || 0), 0);
+        const borrowedUsdt = live.filter(t => t.type === 'FLOAT_BORROW').reduce((s, t) => s + Math.abs(t.amount_usdt || 0), 0);
+        const returnedUsdt = live.filter(t => t.type === 'FLOAT_RETURN').reduce((s, t) => s + Math.abs(t.amount_usdt || 0), 0);
+        const owesSgd  = borrowedSgd  - returnedSgd;
+        const owesUsdt = borrowedUsdt - returnedUsdt;
+        const owesEl2 = document.getElementById('sarahOwesFloat');
+        if (owesEl2) {
+          const parts = [];
+          if (Math.abs(owesSgd) >= 1)  parts.push(`$${owesSgd.toLocaleString()}`);
+          if (Math.abs(owesUsdt) >= 1) parts.push(`${owesUsdt.toLocaleString()} USDT`);
+          if (parts.length) { owesEl2.style.display = ''; owesEl2.textContent = `Dealer owes the float: ${parts.join(' · ')}`; }
+          else owesEl2.style.display = 'none';
+        }
+
         const stashList = document.getElementById('floatStashList');
         if (stashList) {
           const recentDs = [...dsTxs].sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp)).slice(0, 8);
@@ -10656,9 +10687,165 @@
           DEALER_TIPS:         { icon: '🃏', label: 'Dealer Tips' },
           ADJUSTMENT:          { icon: '⚙️', label: 'Adjustment' },
           ADVANCE_OUT:         { icon: '🎅', label: 'Derrick Advance' },
+          FLOAT_BORROW:        { icon: '↙️', label: 'Dealer Borrowed' },
+          FLOAT_RETURN:        { icon: '↩️', label: 'Dealer Returned' },
+          FLOAT_SWAP:          { icon: '⇄', label: 'Float Swap' },
           SEED:                { icon: '🌱', label: 'Opening Balance' },
         };
         return map[type] || { icon: '💰', label: type || '—' };
+      },
+
+      // ── Dealer working capital: borrow from / return to Derrick's float ──
+      // Borrow = Sarah takes cash/USDT out of the float to pay people (float ↓,
+      // 'owes the float' ↑). Return = she puts it back when repaid (float ↑,
+      // owes ↓). Net of borrow/return is a wash — only Derrick's own play
+      // permanently changes the float.
+      showFloatBorrowModal(mode) {
+        const isReturn = mode === 'return';
+        document.getElementById('modalTitle').textContent = isReturn ? '↩ Return to Float' : '↙ Borrow from Float';
+        document.getElementById('modalBody').innerHTML = `
+          <div style="font-size:12px; color:var(--text-secondary); margin-bottom:12px; padding:8px; background:var(--bg-tertiary); border-radius:8px;">
+            ${isReturn ? 'Putting cash/USDT back into the float after being repaid.' : 'Taking cash/USDT out of the float to pay people now. Tracked as owed until returned.'}
+          </div>
+          <div class="form-group">
+            <label class="form-label">Currency</label>
+            <select class="form-input" id="fbCurrency">
+              <option value="sgd">Cash SGD</option>
+              <option value="usdt">USDT</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Amount</label>
+            <input type="text" inputmode="numeric" class="form-input" id="fbAmount" placeholder="0" onclick="this.select()" oninput="app._fmtBuyinInput(this)" style="font-size:20px; text-align:center; font-weight:700;">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Note <span style="color:var(--text-secondary); font-size:11px;">(optional — who / why)</span></label>
+            <input type="text" class="form-input" id="fbNote" placeholder="e.g. paid KQ's winnings">
+          </div>
+        `;
+        document.getElementById('modalFooter').innerHTML = `
+          <button class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="app.commitFloatBorrow('${isReturn ? 'return' : 'borrow'}')">${isReturn ? 'Return' : 'Borrow'}</button>
+        `;
+        document.getElementById('modal').classList.add('show');
+      },
+
+      async commitFloatBorrow(mode) {
+        if (this._committing) return;
+        const isReturn = mode === 'return';
+        const cur = document.getElementById('fbCurrency').value;
+        const raw = (document.getElementById('fbAmount').value || '').replace(/[^0-9.]/g, '');
+        const amt = parseFloat(raw);
+        if (!amt || amt <= 0) { this.showToast('Enter a valid amount'); return; }
+        const note = (document.getElementById('fbNote').value || '').trim();
+        this._committing = true;
+        try {
+          const sign = isReturn ? 1 : -1; // borrow lowers float, return raises it
+          const now = new Date().toISOString();
+          await db.put('floatTransactions', {
+            id: crypto.randomUUID(),
+            session_id: this.currentSession?.id || null,
+            timestamp: now,
+            type: isReturn ? 'FLOAT_RETURN' : 'FLOAT_BORROW',
+            amount_sgd:  cur === 'sgd'  ? sign * amt : 0,
+            amount_usdt: cur === 'usdt' ? sign * amt : 0,
+            rate_used: null,
+            player_id: null,
+            note: note || (isReturn ? 'Dealer returned to float' : 'Dealer borrowed from float'),
+            updated_at: now,
+            deleted_at: null,
+          });
+          this.showToast(isReturn ? 'Returned to float' : 'Borrowed from float');
+          this.closeModal();
+          this.renderFloatScreen();
+        } finally { this._committing = false; }
+      },
+
+      // ── Float swap: shift the float's SGD/USDT mix in one step ──
+      // e.g. take 1,000 USDT out + put 1,400 SGD in. Net SGD-value ~0; the
+      // composition changes. Does NOT affect 'owes the float'.
+      async showFloatSwapModal() {
+        const rate = await this.fetchLiveRates().then(r => Number(r?.usdtSgd) || FALLBACK_USDT_SGD).catch(() => FALLBACK_USDT_SGD);
+        document.getElementById('modalTitle').textContent = '⇄ Float Swap';
+        document.getElementById('modalBody').innerHTML = `
+          <div style="font-size:12px; color:var(--text-secondary); margin-bottom:12px; padding:8px; background:var(--bg-tertiary); border-radius:8px;">
+            Shift the float's mix — take one currency out, put the other in. Net value stays ~the same; only SGD vs USDT changes.
+          </div>
+          <div class="form-group">
+            <label class="form-label">Direction</label>
+            <select class="form-input" id="fsDir" onchange="app._floatSwapRecalc()">
+              <option value="usdt_to_sgd">Take USDT out → put SGD in</option>
+              <option value="sgd_to_usdt">Take SGD out → put USDT in</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Rate <span style="color:var(--text-secondary); font-size:11px;">SGD per USDT</span></label>
+            <input type="number" step="0.0001" inputmode="decimal" class="form-input" id="fsRate" value="${rate.toFixed(4)}" oninput="app._floatSwapRecalc()" style="text-align:center;">
+          </div>
+          <div class="form-group">
+            <label class="form-label" id="fsOutLabel">USDT out</label>
+            <input type="text" inputmode="numeric" class="form-input" id="fsOut" placeholder="0" onclick="this.select()" oninput="app._fmtBuyinInput(this); app._floatSwapRecalc();" style="font-size:18px; text-align:center; font-weight:700;">
+          </div>
+          <div style="text-align:center; font-size:13px; color:var(--text-secondary); margin:-4px 0 10px;">⇄</div>
+          <div class="form-group">
+            <label class="form-label" id="fsInLabel">SGD in</label>
+            <input type="text" inputmode="numeric" class="form-input" id="fsIn" placeholder="0" onclick="this.select()" oninput="app._fmtBuyinInput(this)" style="font-size:18px; text-align:center; font-weight:700;">
+          </div>
+        `;
+        document.getElementById('modalFooter').innerHTML = `
+          <button class="btn btn-secondary" onclick="app.closeModal()">Cancel</button>
+          <button class="btn btn-primary" onclick="app.commitFloatSwap()">Record Swap</button>
+        `;
+        document.getElementById('modal').classList.add('show');
+        this._floatSwapRecalc();
+      },
+
+      _floatSwapRecalc() {
+        const dir = document.getElementById('fsDir')?.value;
+        const rate = parseFloat(document.getElementById('fsRate')?.value) || FALLBACK_USDT_SGD;
+        const out = parseFloat((document.getElementById('fsOut')?.value || '').replace(/[^0-9.]/g, '')) || 0;
+        const outLbl = document.getElementById('fsOutLabel'), inLbl = document.getElementById('fsInLabel'), inEl = document.getElementById('fsIn');
+        if (dir === 'sgd_to_usdt') {
+          if (outLbl) outLbl.textContent = 'SGD out';
+          if (inLbl) inLbl.textContent = 'USDT in';
+          if (inEl && out) inEl.value = (out / rate).toFixed(2);
+        } else {
+          if (outLbl) outLbl.textContent = 'USDT out';
+          if (inLbl) inLbl.textContent = 'SGD in';
+          if (inEl && out) inEl.value = Math.round(out * rate).toLocaleString();
+        }
+      },
+
+      async commitFloatSwap() {
+        if (this._committing) return;
+        const dir = document.getElementById('fsDir').value;
+        const rate = parseFloat(document.getElementById('fsRate').value) || FALLBACK_USDT_SGD;
+        const out = parseFloat((document.getElementById('fsOut').value || '').replace(/[^0-9.]/g, ''));
+        const inAmt = parseFloat((document.getElementById('fsIn').value || '').replace(/[^0-9.]/g, ''));
+        if (!out || out <= 0 || !inAmt || inAmt <= 0) { this.showToast('Enter both amounts'); return; }
+        this._committing = true;
+        try {
+          const now = new Date().toISOString();
+          // sgd_to_usdt: SGD out (−sgd), USDT in (+usdt). usdt_to_sgd: USDT out (−usdt), SGD in (+sgd).
+          const sgd  = dir === 'sgd_to_usdt' ? -out   : inAmt;
+          const usdt = dir === 'sgd_to_usdt' ?  inAmt : -out;
+          await db.put('floatTransactions', {
+            id: crypto.randomUUID(),
+            session_id: this.currentSession?.id || null,
+            timestamp: now,
+            type: 'FLOAT_SWAP',
+            amount_sgd: sgd,
+            amount_usdt: usdt,
+            rate_used: rate,
+            player_id: null,
+            note: dir === 'sgd_to_usdt' ? `Swap: $${out.toLocaleString()} → ${inAmt.toLocaleString()} USDT @ ${rate.toFixed(4)}` : `Swap: ${out.toLocaleString()} USDT → $${inAmt.toLocaleString()} @ ${rate.toFixed(4)}`,
+            updated_at: now,
+            deleted_at: null,
+          });
+          this.showToast('Swap recorded');
+          this.closeModal();
+          this.renderFloatScreen();
+        } finally { this._committing = false; }
       },
 
       async saveMyName() {
@@ -11274,7 +11461,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v62';
+    const APP_VERSION = 'v63';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
