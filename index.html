@@ -4120,7 +4120,7 @@
               <div class="numeric-display" style="font-size:16px; font-weight:800;">$${cashOutTotal.toLocaleString()}</div>
             </div>
             <div style="flex:1; text-align:center; padding:8px 6px; background:var(--bg-tertiary); border:1px solid var(--accent-warning)33; border-radius:10px;">
-              <div style="font-size:10px; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.4px;">On table</div>
+              <div style="font-size:10px; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.4px;">House (so far)</div>
               <div class="numeric-display" style="font-size:16px; font-weight:800; color:var(--accent-warning);">$${Math.max(0, buyInTotal - cashOutTotal).toLocaleString()}</div>
             </div>
           </div>` : ''}
@@ -4180,7 +4180,7 @@
           if (this.sessionTab === 'buyins') {
             topBtns.push(`<button class="btn btn-secondary" onclick="app.addPlayerToSession()" style="flex:1; font-size:13px; padding:11px;">+ Add Player</button>`);
           } else {
-            topBtns.push(`<button class="btn btn-secondary" onclick="app.showTablePaymentModal()" style="flex:1; font-size:13px; padding:11px; background:var(--accent-warning)22; color:var(--accent-warning); border:1px solid var(--accent-warning)44;">💸 Transfer</button>`);
+            topBtns.push(`<button class="btn btn-secondary" onclick="app.showTablePaymentModal()" style="flex:1; font-size:13px; padding:11px; background:var(--accent-warning)22; color:var(--accent-warning); border:1px solid var(--accent-warning)44;">💸 Side Payment</button>`);
             topBtns.push(`<button class="btn btn-secondary" onclick="app.showFloatBorrowModal('borrow')" title="Borrow cash/USDT from the float to pay someone now" style="flex:1; font-size:13px; padding:11px; background:var(--accent-success)18; color:var(--accent-success); border:1px solid var(--accent-success)44;">↙ Float</button>`);
             if (this.isOwner()) {
               topBtns.push(`<button class="btn btn-secondary" onclick="app.showDerrickAdvanceModal()" style="flex:1; font-size:13px; padding:11px; background:var(--accent-primary)22; color:var(--accent-primary); border:1px solid var(--accent-primary)44;">🏦 Advance</button>`);
@@ -4319,7 +4319,7 @@
               const paid = Math.min(rawPaid, Math.abs(netPl));
               const residual = Math.abs(netPl) - paid;
               const balanceHint = residual > 0
-                ? ` · ${netPl > 0 ? 'Owed' : 'Owes'} $${residual.toLocaleString()}`
+                ? ` · ${netPl > 0 ? 'Table owes' : 'Owes table'} $${residual.toLocaleString()}`
                 : '';
               const editable = isActive && this.isDealer();
               html += `
@@ -4344,7 +4344,7 @@
         const tablePayments = (await db.getAll('tablePayments')).filter(tp => tp.session_id === session.id);
         if (tablePayments.length > 0) {
           html += `<div style="padding: 0 16px; margin-top: 8px;">
-            <div style="font-size: 13px; font-weight: 700; color: var(--text-secondary); margin-bottom: 8px;">💸 Table Payments</div>`;
+            <div style="font-size: 13px; font-weight: 700; color: var(--text-secondary); margin-bottom: 8px;">💸 Side Payments</div>`;
           for (const tp of tablePayments.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))) {
             const fromPlayer = tp.from_source === 'derrick_float' ? 'Derrick (Float)' : (playerMap[tp.from_player_id]?.name || '?');
             const toPlayer = playerMap[tp.to_player_id]?.name || '?';
@@ -6234,7 +6234,7 @@
           (rosterPlayers.length ? `<optgroup label="Not in Session">${buildOpts(rosterPlayers, false)}</optgroup>` : '');
 
         const modal = document.getElementById('modal');
-        document.getElementById('modalTitle').textContent = '💸 Transfer / Side Payment';
+        document.getElementById('modalTitle').textContent = '💸 Side Payment';
 
         document.getElementById('modalBody').innerHTML = `
           <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 10px;">● = in this session &nbsp; ○ = outside the game</div>
@@ -6248,7 +6248,7 @@
           </div>
           <div style="margin-bottom: 12px;">
             <label style="font-size: 13px; color: var(--text-secondary); display: block; margin-bottom: 4px;">Amount (SGD)</label>
-            <input type="number" id="tpAmount" placeholder="0" style="width: 100%; padding: 12px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 8px; font-size: 20px; text-align: center;" inputmode="numeric">
+            <input type="text" inputmode="numeric" id="tpAmount" placeholder="0" onclick="this.select()" oninput="app._fmtBuyinInput(this)" style="width: 100%; padding: 12px; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 8px; font-size: 20px; text-align: center; font-weight:700;">
           </div>
         `;
         document.getElementById('modalFooter').innerHTML = `
@@ -6261,7 +6261,7 @@
       async commitTablePayment() {
         const fromId = document.getElementById('tpFrom').value;
         const toId = document.getElementById('tpTo').value;
-        const amount = parseFloat(document.getElementById('tpAmount').value);
+        const amount = parseFloat((document.getElementById('tpAmount').value || '').replace(/[^0-9.]/g, ''));
         if (!amount || amount <= 0) { this.showToast('Enter a valid amount'); return; }
         if (fromId === toId) { this.showToast('From and To must be different'); return; }
 
@@ -6284,7 +6284,7 @@
         } else {
           this.renderSessionScreen();
         }
-        this.showToast('Table payment recorded');
+        this.showToast('Side payment recorded');
       },
 
       // ── Derrick Advance: Derrick puts cash in for a player ──
@@ -6860,17 +6860,31 @@
 
         // Zero-sum check (on session P/L only — carries and table payments are separate)
         const totalPL = entries.reduce((sum, e) => sum + e.net_pl, 0);
+        const broken = Math.abs(totalPL) >= 0.01;
+        // Players still holding chips (not cashed out). The house take is computed
+        // to net to ~0, so a green "balanced" while someone is in-play is
+        // misleading — surface that as a to-do instead.
+        const stillInCount = entries.filter(e => {
+          const r = players.find(p => p.id === e.player_id)?.role;
+          return r !== 'dealer' && (e.cash_out === null || e.cash_out === undefined);
+        }).length;
         const banner = document.getElementById('zeroSumBanner');
         banner.classList.add('show');
-        if (Math.abs(totalPL) < 0.01) {
-          banner.classList.add('ok');
-          banner.classList.remove('error');
-          banner.textContent = '✓ Zero-sum check passed';
-        } else {
-          banner.classList.remove('ok');
+        banner.classList.remove('ok', 'error');
+        if (stillInCount > 0) {
           banner.classList.add('error');
-          banner.textContent = `✗ Zero-sum broken: ${totalPL}`;
+          banner.textContent = `⏳ ${stillInCount} still in play — cash them out below before committing`;
+        } else if (broken) {
+          banner.classList.add('error');
+          banner.textContent = `✗ Numbers don't balance — off by $${Math.abs(totalPL).toLocaleString()}. Recheck a buy-in or cash-out.`;
+        } else {
+          banner.classList.add('ok');
+          banner.textContent = '✓ Balanced — ready to commit';
         }
+        // Block commit when genuinely unbalanced (in-play is allowed via the
+        // existing commit confirm, for the intentional total-loss case).
+        const _commitBtn = document.getElementById('commitSettlementBtn');
+        if (_commitBtn) _commitBtn.disabled = broken;
 
         // Compute table payment totals per player
         // paid_out = cash this player gave at the table (reduces what they still owe)
@@ -11338,7 +11352,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v66';
+    const APP_VERSION = 'v67';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
