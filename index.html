@@ -4804,6 +4804,9 @@
               Sources
             </div>
             <div style="border:1px solid var(--border-color); border-radius:10px; padding:0 8px;">
+              ${player.role === 'bank' ? `
+              <!-- Float is Derrick's own money — only offered when cashing Derrick out.
+                   For everyone else, Sarah fronts cash via the ↙ Float borrow tool. -->
               <div data-src-row data-src-type="float_sgd" data-cap="999999999" data-avail-sgd="${floatCash}"
                    style="display:flex; align-items:center; gap:8px; padding:7px 4px; border-bottom:1px solid var(--border-color);">
                 <span style="flex:1; font-size:13px;">🏦 Float (Cash) <span style="font-size:11px; color:var(--text-secondary);">$${fmt(floatCash)} avail</span></span>
@@ -4819,6 +4822,7 @@
                   oninput="app._coAllocFmt(this)" onclick="this.select()"
                   style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
               </div>
+              ` : ''}
               <div data-src-row data-src-type="stash" data-cap="999999999" data-avail-sgd="${stashTotal}"
                    style="display:flex; align-items:center; gap:8px; padding:7px 4px; border-bottom:1px solid var(--border-color);">
                 <span style="flex:1; font-size:13px;">🃏 Dealer Stash <span style="font-size:11px; color:var(--text-secondary);">$${fmt(stashTotal)} avail</span></span>
@@ -5213,6 +5217,10 @@
         const winnerId = entry.player_id;
         const netPl = cashout - buyin;
         const isWin = netPl > 0;
+        // Float is Derrick's own money: his win goes INTO the float (+), his loss
+        // comes FROM it (−) — the OPPOSITE of a normal player being paid from the
+        // float. (Non-Derrick players can't allocate to the float anymore.)
+        const isBank = player?.role === 'bank';
 
         // Snapshot for undo
         this.lastCashout = {
@@ -5278,33 +5286,40 @@
             // reduce it by the amount. When carry hits zero, mark cleared.
             await this._reduceLoserCarryBy(fromId, session.id, amt);
           } else if (type === 'float_sgd') {
+            // Owner-relative: Derrick win → INTO float (+); loss → FROM float (−).
+            const sgdDelta = isBank ? (isWin ? amt : -amt) : (isWin ? -amt : amt);
+            const intoFloat = sgdDelta > 0;
             await db.put('floatTransactions', {
               id: crypto.randomUUID(),
               session_id: session.id,
               origin_entry_id: entryId,
               timestamp: now,
-              type: isWin ? 'SETTLEMENT_CASH_OUT' : 'SETTLEMENT_CASH_IN',
-              amount_sgd: isWin ? -amt : amt,
+              type: intoFloat ? 'SETTLEMENT_CASH_IN' : 'SETTLEMENT_CASH_OUT',
+              amount_sgd: sgdDelta,
               amount_usdt: 0,
               rate_used: null,
               player_id: winnerId,
-              note: `Cashout — Float Cash ${isWin ? 'paid to' : 'collected from'} ${playerName}`,
+              note: isBank
+                ? `Cashout — Derrick ${isWin ? 'win into' : 'loss from'} float ($${amt.toLocaleString()})`
+                : `Cashout — Float Cash ${isWin ? 'paid to' : 'collected from'} ${playerName}`,
               updated_at: now,
               deleted_at: null,
             });
           } else if (type === 'float_usdt') {
             const usdt = amt / rate;
+            const usdtDelta = isBank ? (isWin ? usdt : -usdt) : (isWin ? -usdt : usdt);
+            const intoFloat = usdtDelta > 0;
             await db.put('floatTransactions', {
               id: crypto.randomUUID(),
               session_id: session.id,
               origin_entry_id: entryId,
               timestamp: now,
-              type: isWin ? 'USDT_PAYOUT' : 'USDT_COLLECTION',
+              type: intoFloat ? 'USDT_COLLECTION' : 'USDT_PAYOUT',
               amount_sgd: 0,
-              amount_usdt: isWin ? -usdt : usdt,
+              amount_usdt: usdtDelta,
               rate_used: rate,
               player_id: winnerId,
-              note: `Cashout — Float USDT ${isWin ? 'paid' : 'collected'}: ${usdt.toFixed(2)}T @ ${rate.toFixed(4)} = $${amt.toLocaleString()}`,
+              note: `Cashout — Float USDT ${intoFloat ? 'into' : 'from'} float: ${usdt.toFixed(2)}T @ ${rate.toFixed(4)} = $${amt.toLocaleString()}`,
               updated_at: now,
               deleted_at: null,
             });
@@ -9216,6 +9231,11 @@
           </div>
         `;
         if (carry.status === 'open') {
+          // The float is Derrick's money — only let a carry clear via Float/USDT
+          // when Derrick is actually party to it (he owes it or is owed it).
+          // Carries between two other people settle Player / Stash / external.
+          const bankId = allPlayers.find(p => p.role === 'bank')?.id;
+          const derrickInvolved = !!bankId && (carry.player_id === bankId || carry.counterparty_id === bankId);
           document.getElementById('modalFooter').innerHTML = `
             <div style="display: flex; flex-direction: column; gap: 8px; width: 100%;">
               <button class="btn btn-primary btn-block" onclick="app.saveCarryEdit('${carry.id}')">💾 Save amount</button>
@@ -9223,9 +9243,11 @@
               <div style="font-size: 12px; color: var(--text-secondary); text-align: center; margin-bottom: 2px;">Or clear via:</div>
               <div style="display: flex; gap: 0; border-radius: 10px; overflow: hidden; border: 1px solid var(--border-color);">
                 <button onclick="app.closeModal(); app.clearCarry('${carry.id}', 'player')" style="flex: 1; padding: 12px 4px; background: var(--bg-tertiary); color: var(--text-primary); border: none; font-size: 13px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation;">👤 Player</button>
-                <button onclick="app.closeModal(); app.clearCarry('${carry.id}', 'dealer_stash')" style="flex: 1; padding: 12px 4px; background: var(--bg-tertiary); color: var(--accent-success); border: none; font-size: 13px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation;">🃏 Stash</button>
+                <button onclick="app.closeModal(); app.clearCarry('${carry.id}', 'dealer_stash')" style="flex: 1; padding: 12px 4px; background: var(--bg-tertiary); color: var(--accent-success); border: none; font-size: 13px; font-weight: 600; cursor: pointer; ${derrickInvolved ? 'border-right: 1px solid var(--border-color);' : ''} touch-action: manipulation;">🃏 Stash</button>
+                ${derrickInvolved ? `
                 <button onclick="app.closeModal(); app.clearCarry('${carry.id}', 'derrick_float')" style="flex: 1; padding: 12px 4px; background: var(--bg-tertiary); color: var(--accent-primary); border: none; font-size: 13px; font-weight: 600; cursor: pointer; border-right: 1px solid var(--border-color); touch-action: manipulation;">🏦 Float</button>
                 <button onclick="app.closeModal(); app.clearCarry('${carry.id}', 'usdt')" style="flex: 1; padding: 12px 4px; background: var(--bg-tertiary); color: #f7931a; border: none; font-size: 13px; font-weight: 600; cursor: pointer; touch-action: manipulation;">🔶 USDT</button>
+                ` : ''}
               </div>
               <button onclick="app.closeModal(); app.clearCarry('${carry.id}', 'external')" style="width: 100%; padding: 11px 4px; background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border-color); border-radius: 10px; font-size: 13px; font-weight: 600; cursor: pointer; touch-action: manipulation;">✅ Already settled outside the app</button>
               <button class="btn btn-secondary" onclick="app.closeModal()" style="margin-top: 2px;">Close</button>
@@ -11461,7 +11483,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v63';
+    const APP_VERSION = 'v64';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
