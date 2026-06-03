@@ -4809,13 +4809,24 @@
                    FROM the pot (capped at the pot balance). For a LOSER it ADDS the
                    cash they're handing in TO the pot. Direction handled in commit. -->
               <div data-src-row data-src-type="cash_pot" data-cap="999999999" data-avail-sgd="${cashPot}"
-                   style="display:flex; align-items:center; gap:8px; padding:7px 4px;">
+                   style="display:flex; align-items:center; gap:8px; padding:7px 4px; ${player.role !== 'bank' ? 'border-bottom:1px solid var(--border-color);' : ''}">
                 <span style="flex:1; font-size:13px;">💵 Cash on table
                   <span id="coCashPotHint" style="font-size:11px; color:var(--text-secondary);">$${fmt(cashPot)} in pot</span></span>
                 <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
                   oninput="app._coAllocFmt(this)" onclick="this.select()"
                   style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
               </div>
+              ${player.role !== 'bank' ? `
+              <!-- This player hands cash straight to Derrick (e.g. they owe him) →
+                   it goes INTO Derrick's float. One-stop, no separate screen. -->
+              <div data-src-row data-src-type="derrick_float_in" data-cap="999999999"
+                   style="display:flex; align-items:center; gap:8px; padding:7px 4px;">
+                <span style="flex:1; font-size:13px;">🏦 To Derrick's Float <span style="font-size:11px; color:var(--text-secondary);">they pay Derrick</span></span>
+                <input type="text" inputmode="numeric" class="alloc-src" placeholder="0"
+                  oninput="app._coAllocFmt(this)" onclick="this.select()"
+                  style="width:90px; padding:6px 8px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:6px; font-size:14px; text-align:right;">
+              </div>
+              ` : ''}
             </div>
             <div id="coAllocStatus" style="margin-top:8px; text-align:center; font-weight:700; font-size:13px; min-height:18px;"></div>
           </div>
@@ -5288,6 +5299,23 @@
               to_player_id: isWin ? winnerId : null,      // winner is the one taking cash out
               amount: isWin ? -amt : amt,                 // sign: + adds to pot, - draws from pot
               note: isWin ? `Cash on table — paid $${amt.toLocaleString()} to ${playerName}` : `Cash on table — ${playerName} put in $${amt.toLocaleString()}`,
+              updated_at: now,
+              deleted_at: null,
+            });
+          } else if (type === 'derrick_float_in') {
+            // Player hands cash straight to Derrick (e.g. settling a debt) → it
+            // goes INTO Derrick's float (+). Always money-in regardless of win/loss.
+            await db.put('floatTransactions', {
+              id: crypto.randomUUID(),
+              session_id: session.id,
+              origin_entry_id: entryId,
+              timestamp: now,
+              type: 'SETTLEMENT_CASH_IN',
+              amount_sgd: amt,
+              amount_usdt: 0,
+              rate_used: null,
+              player_id: winnerId,
+              note: `${playerName} paid Derrick into float ($${amt.toLocaleString()})`,
               updated_at: now,
               deleted_at: null,
             });
@@ -11407,7 +11435,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v68';
+    const APP_VERSION = 'v69';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
