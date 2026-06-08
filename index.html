@@ -2017,6 +2017,26 @@
 
     <!-- Toast -->
     <div id="toast" class="toast"></div>
+
+    <!-- Staff data-password gate (Phase A auth). Shown only when this device has
+         no signed-in session. One-time per phone; the session then persists. -->
+    <div id="staffLoginOverlay" style="display:none; position:fixed; inset:0; z-index:4000; background:rgba(8,10,16,0.96); align-items:center; justify-content:center; padding:24px;">
+      <div style="width:100%; max-width:360px; background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:16px; padding:22px 20px; box-shadow:0 18px 50px rgba(0,0,0,0.5);">
+        <div style="font-size:30px; text-align:center; margin-bottom:6px;">🔐</div>
+        <div style="font-size:17px; font-weight:800; text-align:center; margin-bottom:4px;">Connect this device</div>
+        <div style="font-size:12px; color:var(--text-secondary); text-align:center; margin-bottom:16px; line-height:1.45;">
+          Enter the Merryn data password to sync with the shared records. You only do this once on this phone.
+        </div>
+        <input type="password" id="staffPwInput" placeholder="Data password" autocomplete="current-password"
+          onkeydown="if(event.key==='Enter') app && cloud._staffConnect()"
+          style="width:100%; box-sizing:border-box; padding:12px 14px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:10px; font-size:16px; text-align:center; letter-spacing:1px;">
+        <div id="staffPwError" style="font-size:12px; color:var(--accent-danger); text-align:center; min-height:16px; margin:8px 0 4px;"></div>
+        <button id="staffConnectBtn" onclick="cloud._staffConnect()"
+          style="width:100%; padding:12px; border-radius:10px; border:none; background:var(--accent-success); color:#04140b; font-size:15px; font-weight:800; cursor:pointer; touch-action:manipulation;">Connect</button>
+        <button onclick="cloud._staffWorkOffline()"
+          style="width:100%; margin-top:8px; padding:9px; border-radius:10px; border:1px solid var(--border-color); background:transparent; color:var(--text-secondary); font-size:12px; cursor:pointer; touch-action:manipulation;">Use offline on this phone (no sync)</button>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -2168,6 +2188,11 @@
       appId: "1:606772097464:web:3d8b52a3fd65500fb35f4d",
     };
 
+    // Phase A auth: the shared STAFF login. The email is a fixed identifier (not
+    // a secret); the PASSWORD is what the dealer/owner type once per device and is
+    // the real secret guarding the data. RTDB rules will be locked to this email.
+    const STAFF_EMAIL = 'staff@merrynpoker.app';
+
     const cloud = {
       STORES: ['players', 'sessions', 'sessionEntries', 'floatTransactions', 'carryBalances', 'tablePayments', 'dealerStashTransactions'],
       _fb: null,
@@ -2188,20 +2213,88 @@
           if (!firebase.apps.length) firebase.initializeApp(config);
         } catch(e) { console.warn('[cloud] init error:', e); return; }
 
-        // Authenticate before any DB access. The RTDB security rules require
-        // auth != null, so without this every read/write is permission-denied.
-        // Anonymous auth gives each device a stable uid with zero user friction.
-        // If auth fails (e.g. Anonymous provider not enabled in the Firebase
-        // console), we log and bail to local-only rather than hanging.
+        // Authenticate before any DB access (rules require auth). Phase A uses a
+        // shared STAFF email/password instead of anonymous, so only people with
+        // the password can reach the data. Wait for any persisted session to
+        // restore; if none, show the one-time staff-password gate. The rest of
+        // setup runs in _afterAuthSetup() once we have a user.
+        if (!firebase.auth) { console.warn('[cloud] Firebase Auth SDK missing — local-only.'); return; }
+        let _user = null;
         try {
-          if (firebase.auth && !firebase.auth().currentUser) {
-            await this._withTimeout(firebase.auth().signInAnonymously(), 10000, 'auth');
-          }
-        } catch(e) {
-          console.warn('[cloud] anonymous auth failed — running local-only. Enable Anonymous sign-in in the Firebase console.', e);
-          return;
+          _user = await new Promise((res) => {
+            const unsub = firebase.auth().onAuthStateChanged((u) => { unsub(); res(u); });
+          });
+        } catch(e) { console.warn('[cloud] auth state error — local-only:', e); return; }
+
+        // Migrate off OLD anonymous sessions: Phase A requires the staff login,
+        // so sign out any anonymous session and show the gate. (Otherwise old
+        // devices keep syncing anonymously and get cut off the instant the rules
+        // are locked to the staff account.)
+        if (_user && _user.isAnonymous) {
+          try { await firebase.auth().signOut(); } catch(e) {}
+          _user = null;
         }
 
+        if (_user) {
+          await this._afterAuthSetup();
+        } else {
+          this._promptStaffLogin(); // overlay → _staffConnect() → _afterAuthSetup()
+        }
+      },
+
+      // The shared staff sign-in. First device ever (no account yet) CREATES it
+      // with the chosen password; everyone after signs in. Email is fixed.
+      async _staffSignIn(pw) {
+        try {
+          await firebase.auth().signInWithEmailAndPassword(STAFF_EMAIL, pw);
+        } catch(e) {
+          if (e && e.code === 'auth/user-not-found') {
+            await firebase.auth().createUserWithEmailAndPassword(STAFF_EMAIL, pw);
+          } else { throw e; }
+        }
+      },
+
+      _promptStaffLogin() {
+        const ov = document.getElementById('staffLoginOverlay');
+        if (ov) { ov.style.display = 'flex'; setTimeout(() => document.getElementById('staffPwInput')?.focus(), 80); }
+      },
+
+      async _staffConnect() {
+        const inp = document.getElementById('staffPwInput');
+        const errEl = document.getElementById('staffPwError');
+        const btn = document.getElementById('staffConnectBtn');
+        const pw = (inp?.value || '').trim();
+        if (errEl) errEl.textContent = '';
+        if (pw.length < 6) { if (errEl) errEl.textContent = 'At least 6 characters.'; return; }
+        if (btn) { btn.disabled = true; btn.textContent = 'Connecting…'; }
+        try {
+          await this._staffSignIn(pw);
+          const ov = document.getElementById('staffLoginOverlay'); if (ov) ov.style.display = 'none';
+          await this._afterAuthSetup();
+          if (typeof app !== 'undefined') app.showToast('Connected to shared data');
+        } catch(e) {
+          console.warn('[cloud] staff sign-in failed:', e);
+          const msg = e.code === 'auth/wrong-password' ? 'Wrong password.'
+            : e.code === 'auth/too-many-requests' ? 'Too many tries — wait a minute.'
+            : e.code === 'auth/network-request-failed' ? 'No internet — try again or use offline.'
+            : e.code === 'auth/operation-not-allowed' ? 'Email/Password sign-in not enabled in Firebase yet.'
+            : 'Could not connect — check the password.';
+          if (errEl) errEl.textContent = msg;
+        } finally {
+          if (btn) { btn.disabled = false; btn.textContent = 'Connect'; }
+        }
+      },
+
+      _staffWorkOffline() {
+        const ov = document.getElementById('staffLoginOverlay'); if (ov) ov.style.display = 'none';
+        if (typeof app !== 'undefined') app.showToast('Offline on this device — no sync until you connect');
+      },
+
+      // Everything that needs a signed-in user: DB handle, connection badge,
+      // first-join bootstrap, and the per-store listeners.
+      async _afterAuthSetup() {
+        if (this._afterAuthDone) return; // idempotent
+        this._afterAuthDone = true;
         this._fb = firebase.database();
 
         // Connection status badge
@@ -11435,7 +11528,7 @@
     // This is the escape hatch for "I shipped a fix but the phone still shows the
     // old version" — a PWA can cling to a stale cached index.html. Data lives in
     // IndexedDB/Firebase and is NOT touched; this only clears the code cache.
-    const APP_VERSION = 'v69';
+    const APP_VERSION = 'v70';
     { const el = document.getElementById('appVersion'); if (el) el.textContent = APP_VERSION; }
     document.getElementById('forceUpdateBtn')?.addEventListener('click', async () => {
       if (!confirm('Reload the app to get the latest version?\n\nThis clears the cached app code and reloads. Your data is safe (stored separately).')) return;
