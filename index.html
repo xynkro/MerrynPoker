@@ -2028,7 +2028,7 @@
           Enter the Merryn data password to sync with the shared records. You only do this once on this phone.
         </div>
         <input type="password" id="staffPwInput" placeholder="Data password" autocomplete="current-password"
-          onkeydown="if(event.key==='Enter') app && cloud._staffConnect()"
+          onkeydown="if(event.key==='Enter' && cloud) cloud._staffConnect()"
           style="width:100%; box-sizing:border-box; padding:12px 14px; background:var(--bg-tertiary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:10px; font-size:16px; text-align:center; letter-spacing:1px;">
         <div id="staffPwError" style="font-size:12px; color:var(--accent-danger); text-align:center; min-height:16px; margin:8px 0 4px;"></div>
         <button id="staffConnectBtn" onclick="cloud._staffConnect()"
@@ -2221,9 +2221,12 @@
         if (!firebase.auth) { console.warn('[cloud] Firebase Auth SDK missing — local-only.'); return; }
         let _user = null;
         try {
-          _user = await new Promise((res) => {
-            const unsub = firebase.auth().onAuthStateChanged((u) => { unsub(); res(u); });
-          });
+          _user = await Promise.race([
+            new Promise((res) => {
+              const unsub = firebase.auth().onAuthStateChanged((u) => { unsub(); res(u); });
+            }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('[cloud] auth state timeout after 5s')), 5000)),
+          ]);
         } catch(e) { console.warn('[cloud] auth state error — local-only:', e); return; }
 
         // Migrate off OLD anonymous sessions: Phase A requires the staff login,
@@ -2231,7 +2234,7 @@
         // devices keep syncing anonymously and get cut off the instant the rules
         // are locked to the staff account.)
         if (_user && _user.isAnonymous) {
-          try { await firebase.auth().signOut(); } catch(e) {}
+          try { await firebase.auth().signOut(); } catch(e) { console.warn('[cloud] sign out old anon session failed:', e); }
           _user = null;
         }
 
