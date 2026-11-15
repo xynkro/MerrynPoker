@@ -34,4 +34,6 @@ merryn-poker-repo.zip
 ziOBWyDD
 
 # Local Claude Code preview config (per-machine)
-.claude/
+.claude/*
+!.claude/skills/
+!.claude/CLAUDE.md
